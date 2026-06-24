@@ -13,8 +13,6 @@ import (
 
 const (
 	defaultTimeout = 10 * time.Second
-	statusOKAY     = "OKAY"
-	statusFAIL     = "FAIL"
 )
 
 type Client struct {
@@ -87,10 +85,10 @@ func (c *Client) sendCommand(conn net.Conn, command string) error {
 		_ = conn.SetDeadline(time.Now().Add(c.Timeout))
 	}
 
-	if len(command) > 0xffff {
-		return fmt.Errorf("adb host command too large")
+	frame, err := EncodeFrame(command)
+	if err != nil {
+		return err
 	}
-	frame := fmt.Sprintf("%04X%s", len(command), command)
 	if _, err := io.WriteString(conn, frame); err != nil {
 		return err
 	}
@@ -100,9 +98,9 @@ func (c *Client) sendCommand(conn net.Conn, command string) error {
 		return err
 	}
 	switch string(status[:]) {
-	case statusOKAY:
+	case StatusOKAY:
 		return nil
-	case statusFAIL:
+	case StatusFAIL:
 		return readFailure(conn)
 	default:
 		return fmt.Errorf("unexpected adb host status %q", string(status[:]))

@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
+
+	"adb-tcp-bridge/src/internal/adbhost"
 )
 
 const reverseListenHost = "127.0.0.1"
@@ -220,24 +221,30 @@ func (m *reverseManager) runDeviceReverse(ctx context.Context, command string) (
 }
 
 func reverseResponseOK(response []byte) bool {
-	return len(response) >= 4 && string(response[:4]) == "OKAY"
+	return adbhost.HasStatus(response, adbhost.StatusOKAY)
 }
 
 func reverseProtocolString(value string) []byte {
-	return []byte(fmt.Sprintf("%04x%s", len(value), value))
+	frame, err := adbhost.EncodeFrameBytes(value)
+	if err != nil {
+		return reverseFail(err.Error())
+	}
+	return frame
 }
 
 func reverseFail(reason string) []byte {
-	return []byte(fmt.Sprintf("FAIL%04x%s", len(reason), reason))
+	return adbhost.FailMessage(reason)
 }
 
+// resolvedReverseLocal 当本地端口为自动分配（tcp:0）时，从设备返回的
+// OKAY 长度前缀响应里解析出实际端口，拼成 tcp:<port>。
 func resolvedReverseLocal(local string, response []byte) string {
-	if local != "tcp:0" || len(response) < 8 {
+	if local != "tcp:0" || !adbhost.HasStatus(response, adbhost.StatusOKAY) {
 		return local
 	}
-	length, err := strconv.ParseUint(string(response[4:8]), 16, 16)
-	if err != nil || len(response) < 8+int(length) {
+	port, ok := adbhost.ParseLengthPrefixed(response, 4)
+	if !ok {
 		return local
 	}
-	return "tcp:" + string(response[8:8+int(length)])
+	return "tcp:" + port
 }
