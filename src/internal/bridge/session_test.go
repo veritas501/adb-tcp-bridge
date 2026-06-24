@@ -89,3 +89,17 @@ func TestSessionRejectsStlsWithClearError(t *testing.T) {
 		t.Fatalf("handlePacket() error = %q, want TLS unsupported message", err)
 	}
 }
+
+func TestLocalHandlerRoutesReverseOnly(t *testing.T) {
+	_, server := newMemoryConn()
+	defer server.Close()
+
+	session := newSession(Config{Serial: "serial"}, server)
+
+	if h := session.localHandler("shell:ls"); h != nil {
+		t.Fatal("localHandler(shell:) = non-nil, want nil (should use default transport)")
+	}
+	if h := session.localHandler("reverse:list-forward"); h == nil {
+		t.Fatal("localHandler(reverse:) = nil, want a local responder")
+	}
+}

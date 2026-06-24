@@ -125,6 +125,9 @@ func (s *service) sendOpenAndWaitAck() error {
 	}
 }
 
+// sendPayloadAndClose 用于本地合成响应（如 reverse: 控制命令）：直接回一个
+// OKAY，把预先算好的 payload 以单个 WRTE 发回 client，随后关闭。它复用了流式
+// service 的 ack/流控/CLSE 簿记，但不读取 conn、不开 transport。
 func (s *service) sendPayloadAndClose(payload []byte) {
 	defer s.finish()
 

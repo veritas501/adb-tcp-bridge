@@ -180,14 +180,29 @@ func (s *session) handleOpen(ctx context.Context, packet adbwire.Packet) error {
 
 	name := string(packet.Payload[:len(packet.Payload)-1])
 	svc := s.startService(name, packet.Arg0)
-	if strings.HasPrefix(name, "reverse:") {
-		command := strings.TrimPrefix(name, "reverse:")
-		go func() {
-			svc.sendPayloadAndClose(s.reverse.handle(ctx, command))
-		}()
-		return nil
+	go s.driveOpen(ctx, svc, name)
+	return nil
+}
+
+// driveOpen 决定一个被 OPEN 的 service 如何运行：命中本地 handler（如
+// reverse:）就交由其产出一次性响应，否则回退到默认的 adb transport 转发。
+func (s *session) driveOpen(ctx context.Context, svc *service, name string) {
+	if handler := s.localHandler(name); handler != nil {
+		svc.sendPayloadAndClose(handler(ctx))
+		return
 	}
-	go svc.run(ctx)
+	svc.run(ctx)
+}
+
+// localHandler 按服务名匹配出一个本地响应器；返回 nil 表示该服务应走
+// 默认的 adb transport 路径。新增此类合成服务时在这里登记前缀即可，
+// 无需改动 handleOpen 的分发逻辑。
+func (s *session) localHandler(name string) func(context.Context) []byte {
+	if command, ok := strings.CutPrefix(name, "reverse:"); ok {
+		return func(ctx context.Context) []byte {
+			return s.reverse.handle(ctx, command)
+		}
+	}
 	return nil
 }
 
