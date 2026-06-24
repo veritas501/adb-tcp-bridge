@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 
 	"adb-tcp-bridge/src/internal/adbwire"
@@ -29,6 +30,7 @@ type session struct {
 	serviceMu   sync.Mutex
 	nextLocalID uint32
 	services    map[uint32]*service
+	reverse     *reverseManager
 
 	authorized bool
 	version    uint32
@@ -38,7 +40,7 @@ type session struct {
 
 func newSession(config Config, conn net.Conn) *session {
 	config.Logger = normalizeLogger(config.Logger)
-	return &session{
+	s := &session{
 		config:      config,
 		conn:        conn,
 		nextLocalID: 1,
@@ -46,6 +48,8 @@ func newSession(config Config, conn net.Conn) *session {
 		version:     defaultVersion,
 		maxPayload:  defaultMaxPayload,
 	}
+	s.reverse = newReverseManager(s)
+	return s
 }
 
 func (s *session) run(ctx context.Context) {
@@ -175,11 +179,30 @@ func (s *session) handleOpen(ctx context.Context, packet adbwire.Packet) error {
 	}
 
 	name := string(packet.Payload[:len(packet.Payload)-1])
-	localID := s.allocateLocalID()
-	svc := newService(s, localID, packet.Arg0, name)
-	s.putService(localID, svc)
+	svc := s.startService(name, packet.Arg0)
+	if strings.HasPrefix(name, "reverse:") {
+		command := strings.TrimPrefix(name, "reverse:")
+		go func() {
+			svc.sendPayloadAndClose(s.reverse.handle(ctx, command))
+		}()
+		return nil
+	}
 	go svc.run(ctx)
 	return nil
+}
+
+func (s *session) openOutbound(name string, conn net.Conn) {
+	svc := s.startService(name, 0)
+	go svc.runOutbound(conn)
+}
+
+// startService 分配 localID、创建 service 并登记到 session，返回的 service
+// 尚未启动其转发 goroutine，由调用方按方向（run/runOutbound/...）拉起。
+func (s *session) startService(name string, remoteID uint32) *service {
+	localID := s.allocateLocalID()
+	svc := newService(s, localID, remoteID, name)
+	s.putService(localID, svc)
+	return svc
 }
 
 func (s *session) handleOkay(packet adbwire.Packet) error {
@@ -187,7 +210,7 @@ func (s *session) handleOkay(packet adbwire.Packet) error {
 	if svc == nil {
 		return nil
 	}
-	svc.ack()
+	svc.ack(packet.Arg0)
 	return nil
 }
 
@@ -202,7 +225,7 @@ func (s *session) handleWrite(packet adbwire.Packet) error {
 	return s.writePacket(adbwire.Packet{
 		Command: adbwire.CmdOkay,
 		Arg0:    svc.localID,
-		Arg1:    svc.remoteID,
+		Arg1:    svc.remoteID.Load(),
 	})
 }
 
@@ -274,5 +297,6 @@ func (s *session) close() {
 	for _, svc := range services {
 		svc.close()
 	}
+	s.reverse.closeAll()
 	_ = s.conn.Close()
 }

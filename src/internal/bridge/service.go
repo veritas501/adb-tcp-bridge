@@ -2,9 +2,11 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"adb-tcp-bridge/src/internal/adbwire"
 )
@@ -12,7 +14,7 @@ import (
 type service struct {
 	session  *session
 	localID  uint32
-	remoteID uint32
+	remoteID atomic.Uint32
 	name     string
 
 	connMu sync.Mutex
@@ -25,14 +27,15 @@ type service struct {
 }
 
 func newService(session *session, localID uint32, remoteID uint32, name string) *service {
-	return &service{
-		session:  session,
-		localID:  localID,
-		remoteID: remoteID,
-		name:     name,
-		done:     make(chan struct{}),
-		ackCh:    make(chan struct{}, 1),
+	s := &service{
+		session: session,
+		localID: localID,
+		name:    name,
+		done:    make(chan struct{}),
+		ackCh:   make(chan struct{}, 1),
 	}
+	s.remoteID.Store(remoteID)
+	return s
 }
 
 func (s *service) run(ctx context.Context) {
@@ -44,7 +47,7 @@ func (s *service) run(ctx context.Context) {
 			Err(err).
 			Str("service", s.name).
 			Uint32("local_id", s.localID).
-			Uint32("remote_id", s.remoteID).
+			Uint32("remote_id", s.remoteID.Load()).
 			Msg("open adb service failed")
 		return
 	}
@@ -54,32 +57,86 @@ func (s *service) run(ctx context.Context) {
 	if err := s.session.writePacket(adbwire.Packet{
 		Command: adbwire.CmdOkay,
 		Arg0:    s.localID,
-		Arg1:    s.remoteID,
+		Arg1:    s.remoteID.Load(),
 	}); err != nil {
 		return
 	}
 
+	s.pumpConnToClient(conn, "read adb service failed")
+}
+
+func (s *service) runOutbound(conn net.Conn) {
+	defer s.finish()
+
+	s.setConn(conn)
+	if err := s.sendOpenAndWaitAck(); err != nil {
+		s.session.config.Logger.Error().
+			Err(err).
+			Str("service", s.name).
+			Uint32("local_id", s.localID).
+			Msg("open reverse target failed")
+		return
+	}
+
+	s.pumpConnToClient(conn, "read reverse connection failed")
+}
+
+// pumpConnToClient 把 conn 上读到的数据以 WRTE 包转发给 ADB client，
+// 直到读出错或连接关闭。sendWriteAndWaitAck 会阻塞到对端 ACK，
+// 因此 buffer 在每次写完成前不会被复用，可直接传切片无需拷贝。
+func (s *service) pumpConnToClient(conn net.Conn, failMsg string) {
 	buffer := make([]byte, int(s.session.maxPayload))
 	for {
 		n, err := conn.Read(buffer)
 		if n > 0 {
-			payload := append([]byte(nil), buffer[:n]...)
-			if err := s.sendWriteAndWaitAck(payload); err != nil {
+			if err := s.sendWriteAndWaitAck(buffer[:n]); err != nil {
 				return
 			}
 		}
 		if err != nil {
-			if err != io.EOF {
+			if s.shouldLogReadError(err) {
 				s.session.config.Logger.Error().
 					Err(err).
 					Str("service", s.name).
 					Uint32("local_id", s.localID).
-					Uint32("remote_id", s.remoteID).
-					Msg("read adb service failed")
+					Uint32("remote_id", s.remoteID.Load()).
+					Msg(failMsg)
 			}
 			return
 		}
 	}
+}
+
+func (s *service) sendOpenAndWaitAck() error {
+	payload := append([]byte(s.name), 0)
+	if err := s.session.writePacket(adbwire.Packet{
+		Command: adbwire.CmdOpen,
+		Arg0:    s.localID,
+		Payload: payload,
+	}); err != nil {
+		return err
+	}
+
+	select {
+	case <-s.ackCh:
+		return nil
+	case <-s.done:
+		return io.ErrClosedPipe
+	}
+}
+
+func (s *service) sendPayloadAndClose(payload []byte) {
+	defer s.finish()
+
+	s.opened = true
+	if err := s.session.writePacket(adbwire.Packet{
+		Command: adbwire.CmdOkay,
+		Arg0:    s.localID,
+		Arg1:    s.remoteID.Load(),
+	}); err != nil {
+		return
+	}
+	_ = s.sendWriteAndWaitAck(payload)
 }
 
 func (s *service) write(payload []byte) error {
@@ -93,7 +150,23 @@ func (s *service) write(payload []byte) error {
 	return err
 }
 
-func (s *service) ack() {
+func (s *service) shouldLogReadError(err error) bool {
+	if err == nil || err == io.EOF || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *service) ack(remoteID uint32) {
+	s.remoteID.CompareAndSwap(0, remoteID)
+	s.opened = true
+
 	select {
 	case s.ackCh <- struct{}{}:
 	default:
@@ -116,13 +189,17 @@ func (s *service) finish() {
 	s.session.removeService(s.localID)
 
 	localID := s.localID
+	remoteID := s.remoteID.Load()
+	if !s.opened && remoteID == 0 {
+		return
+	}
 	if !s.opened {
 		localID = 0
 	}
 	_ = s.session.writePacket(adbwire.Packet{
 		Command: adbwire.CmdClse,
 		Arg0:    localID,
-		Arg1:    s.remoteID,
+		Arg1:    remoteID,
 	})
 }
 
@@ -133,10 +210,14 @@ func (s *service) setConn(conn net.Conn) {
 }
 
 func (s *service) sendWriteAndWaitAck(payload []byte) error {
+	remoteID := s.remoteID.Load()
+	if remoteID == 0 {
+		return io.ErrClosedPipe
+	}
 	if err := s.session.writePacket(adbwire.Packet{
 		Command: adbwire.CmdWrte,
 		Arg0:    s.localID,
-		Arg1:    s.remoteID,
+		Arg1:    remoteID,
 		Payload: payload,
 	}); err != nil {
 		return err

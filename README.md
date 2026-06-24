@@ -95,6 +95,8 @@ Implemented:
 - adb server host protocol framing: `4-hex length + command`.
 - One adb server transport connection per opened ADB service.
 - `WRTE/OKAY` flow control for device-to-client data.
+- `adb reverse` commands, including reverse connection data proxying back to
+  the external adb client transport.
 - Bridge-side auth that accepts any adb public key (no RSA verification).
 
 Not implemented:

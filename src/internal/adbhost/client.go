@@ -50,6 +50,19 @@ func (c *Client) OpenService(ctx context.Context, serial string, service string)
 	return conn, nil
 }
 
+// RunService 打开 service 并读完整个响应直到对端关闭连接。
+// 仅适用于短小的一次性响应（如 reverse 控制命令），切勿用于
+// shell: 等流式/长连接 service——io.ReadAll 会无界缓冲且永不返回。
+func (c *Client) RunService(ctx context.Context, serial string, service string) ([]byte, error) {
+	conn, err := c.OpenService(ctx, serial, service)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	return io.ReadAll(conn)
+}
+
 func (c *Client) ReadProperties(ctx context.Context, serial string) (map[string]string, error) {
 	conn, err := c.OpenService(ctx, serial, "shell:getprop")
 	if err != nil {
