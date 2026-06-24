@@ -1,0 +1,26 @@
+# Build outputs (anchored to repo root so they don't shadow src/cmd/adb-tcp-bridge/)
+/adbb
+/adb-tcp-bridge
+/bin/
+dist/
+build/
+
+# Go test and coverage artifacts
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
