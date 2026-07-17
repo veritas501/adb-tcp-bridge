@@ -1,9 +1,9 @@
 # adb-tcp-bridge
 
-`adb-tcp-bridge` exposes a USB-connected Android device as an ADB-over-TCP
+`adb-tcp-bridge` exposes an ADB- or HDC-connected device as an ADB-over-TCP
 endpoint. External adb clients connect to the bridge over TCP; the bridge
-translates device-side ADB packets into the local adb server host protocol and
-forwards them through the local adb server to the device over USB.
+translates device-side ADB packets into either the local adb server host
+protocol or the HDC host/server protocol.
 
 The bridge never touches USB directly — the local adb server (usually
 `127.0.0.1:5037`) keeps owning the real USB transport.
@@ -11,8 +11,8 @@ The bridge never touches USB directly — the local adb server (usually
 ```text
 external adb client
   --TCP--> adb-tcp-bridge
-    --host protocol--> local adb server
-      --USB--> device adbd
+    --adb host protocol--> local adb server --> Android adbd
+    --hdc host protocol--> hdc server       --> OpenHarmony hdcd
 ```
 
 ## Why
@@ -65,11 +65,13 @@ and you can run `adb shell`, `adb push`, etc. against it.
 ## Usage
 
 ```
-adbb [flags] <serial>
+adbb [flags] <serial|connect-key>
 ```
 
-`<serial>` is the serial reported by `adb devices` for the USB-connected
-device. Exactly one positional argument is expected.
+For the ADB backend, `<serial>` is the serial reported by `adb devices` for the
+USB-connected Android device. For the HDC backend, `<connect-key>` is the target
+reported by `hdc list targets` and accepted by `hdc -t`. Exactly one positional
+argument is expected.
 
 ### Flags
 
@@ -78,6 +80,8 @@ device. Exactly one positional argument is expected.
 | `-host` | `0.0.0.0` | TCP listen host. |
 | `-port` | `35555` | First TCP listen port to try. If occupied, the bridge walks upward until a free port is found. |
 | `-server` | `127.0.0.1:5037` | Local adb server address. |
+| `-backend` | `adb` | Target backend: `adb` or `hdc`. |
+| `-hdc-server` | `127.0.0.1:8710` | HDC server address when `-backend hdc`. |
 | `-auth` | `accept-all` | Auth mode: `accept-all` (accept any adb public key) or `none` (skip the auth handshake). |
 | `-log-level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 
@@ -87,13 +91,31 @@ Example — listen on a fixed port and forward through a non-default adb server:
 ./adbb -port 40000 -server 127.0.0.1:5037 -log-level debug <serial>
 ```
 
+Expose an OpenHarmony device through an existing HDC server:
+
+```bash
+./adbb -backend hdc <hdc-target>
+adb connect <bridge-host>:35555
+adb -s <bridge-host>:35555 shell
+```
+
+For the HDC backend, `<hdc-target>` is a value from `hdc list targets` and is
+passed to the HDC server as the same connect key used by `hdc -t <hdc-target>`.
+If your HDC server only has one target, `any` is usually sufficient.
+`-hdc-server` only needs to be set when your HDC server is not listening on the
+default `127.0.0.1:8710`.
+
 ## Scope
 
 Implemented:
 
 - ADB packet codec for `SYNC/CNXN/AUTH/OPEN/OKAY/WRTE/CLSE`.
 - adb server host protocol framing: `4-hex length + command`.
+- hdc server channel framing: `4-byte big-endian length + payload`.
 - One adb server transport connection per opened ADB service.
+- HDC backend translation for `shell:`/`exec:` and `sync:` push/pull,
+  including recursive directory pull via `STAT`/`LIST` and file push through
+  HDC native `FileInit/FileCheck/FileBegin/FileData/FileFinish` task frames.
 - `WRTE/OKAY` flow control for device-to-client data.
 - `adb reverse` commands, including reverse connection data proxying back to
   the external adb client transport.

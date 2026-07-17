@@ -90,6 +90,36 @@ func TestSessionRejectsStlsWithClearError(t *testing.T) {
 	}
 }
 
+func TestConnectionCapsAdvertisedVersion(t *testing.T) {
+	client, server := newMemoryConn()
+	defer client.Close()
+	defer server.Close()
+
+	session := newSession(Config{AuthMode: AuthNone, Serial: "serial", DeviceID: "device::test;"}, server)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- session.handlePacket(context.Background(), adbwire.Packet{
+			Command: adbwire.CmdCnxn,
+			Arg0:    defaultVersion + 1,
+			Arg1:    defaultMaxPayload,
+		})
+	}()
+
+	packet, err := adbwire.ReadPacket(client)
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("handlePacket() error = %v", err)
+	}
+	if packet.Command != adbwire.CmdCnxn {
+		t.Fatalf("packet command = %s, want CNXN", packet.Command)
+	}
+	if packet.Arg0 != defaultVersion {
+		t.Fatalf("advertised version = %#x, want %#x", packet.Arg0, defaultVersion)
+	}
+}
+
 func TestLocalHandlerRoutesReverseOnly(t *testing.T) {
 	_, server := newMemoryConn()
 	defer server.Close()

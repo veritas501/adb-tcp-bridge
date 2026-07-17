@@ -100,7 +100,15 @@ func (s *session) handlePacket(ctx context.Context, packet adbwire.Packet) error
 	case adbwire.CmdSync:
 		return s.writePacket(adbwire.Packet{Command: adbwire.CmdSync, Arg0: 1, Arg1: packet.Arg1})
 	case adbwire.CmdCnxn:
-		s.version = packet.Arg0
+		// Do not echo newer client protocol versions blindly. Modern adb servers may
+		// use the version echo as a cue to start STLS, which this clear-text bridge
+		// intentionally does not implement. Advertising the classic 0x01000000
+		// device protocol keeps the transport in the non-TLS path.
+		if packet.Arg0 < defaultVersion {
+			s.version = packet.Arg0
+		} else {
+			s.version = defaultVersion
+		}
 		if packet.Arg1 > 0 {
 			s.maxPayload = packet.Arg1
 			if s.maxPayload > maxWritePayload {

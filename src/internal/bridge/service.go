@@ -41,7 +41,7 @@ func newService(session *session, localID uint32, remoteID uint32, name string) 
 func (s *service) run(ctx context.Context) {
 	defer s.finish()
 
-	conn, err := s.session.config.Host.OpenService(ctx, s.session.config.Serial, s.name)
+	conn, err := s.session.config.Backend.OpenService(ctx, s.session.config.Serial, s.name)
 	if err != nil {
 		s.session.config.Logger.Error().
 			Err(err).

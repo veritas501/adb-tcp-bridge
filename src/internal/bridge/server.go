@@ -34,6 +34,7 @@ type Config struct {
 	ListenStartPort int
 	Serial          string
 	Host            *adbhost.Client
+	Backend         DeviceBackend
 	AuthMode        AuthMode
 	DeviceID        string
 	Logger          *zerolog.Logger
@@ -59,6 +60,9 @@ func NewServer(config Config) (*Server, error) {
 	if config.Host == nil {
 		config.Host = adbhost.New("127.0.0.1:5037")
 	}
+	if config.Backend == nil {
+		config.Backend = newADBServerBackend(config.Host)
+	}
 	if config.AuthMode == "" {
 		config.AuthMode = AuthAcceptAll
 	}
@@ -67,12 +71,12 @@ func NewServer(config Config) (*Server, error) {
 	}
 	config.Logger = normalizeLogger(config.Logger)
 	if config.DeviceID == "" {
-		deviceID, err := loadDeviceID(context.Background(), config.Host, config.Serial)
+		deviceID, err := loadDeviceID(context.Background(), config.Backend, config.Serial)
 		if err != nil {
 			config.Logger.Warn().
 				Err(err).
 				Str("serial", config.Serial).
-				Str("server_addr", config.Host.Addr).
+				Str("backend", config.Backend.Description()).
 				Msg("failed to load device properties, using fallback device id")
 			deviceID = fallbackDeviceID
 		}
@@ -81,8 +85,8 @@ func NewServer(config Config) (*Server, error) {
 	return &Server{config: config}, nil
 }
 
-func loadDeviceID(ctx context.Context, host *adbhost.Client, serial string) (string, error) {
-	properties, err := host.ReadProperties(ctx, serial)
+func loadDeviceID(ctx context.Context, backend DeviceBackend, serial string) (string, error) {
+	properties, err := backend.ReadProperties(ctx, serial)
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +112,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.config.Logger.Info().
 		Str("listen_addr", listener.Addr().String()).
 		Str("serial", s.config.Serial).
-		Str("server_addr", s.config.Host.Addr).
+		Str("backend", s.config.Backend.Description()).
 		Msg("listening")
 
 	var wg sync.WaitGroup

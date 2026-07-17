@@ -4,6 +4,8 @@ MAIN := ./src/cmd/adb-tcp-bridge
 DIST_DIR := dist
 RELEASE_FLAGS := -trimpath -ldflags "-s -w"
 
+.DEFAULT_GOAL := build
+
 .PHONY: fmt test build release release-cross \
 	release-linux-amd64 release-linux-arm64 \
 	release-darwin-amd64 release-darwin-arm64 \
