@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -166,7 +168,7 @@ func (m *reverseManager) killAll(ctx context.Context) []byte {
 }
 
 func (m *reverseManager) closeAll() {
-	if m == nil || m.session.config.Host == nil {
+	if m == nil || m.session.config.Backend == nil {
 		return
 	}
 
@@ -176,11 +178,6 @@ func (m *reverseManager) closeAll() {
 	}
 
 	ctx := context.Background()
-	if m.session.config.Host.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, m.session.config.Host.Timeout)
-		defer cancel()
-	}
 	for _, mapping := range mappings {
 		mapping.listener.Close()
 		_, _ = m.runDeviceReverse(ctx, "killforward:"+mapping.local)
@@ -217,7 +214,15 @@ func (m *reverseManager) list() string {
 }
 
 func (m *reverseManager) runDeviceReverse(ctx context.Context, command string) ([]byte, error) {
-	return m.session.config.Host.RunService(ctx, m.session.config.Serial, "reverse:"+command)
+	if m.session.config.Backend == nil {
+		return nil, errors.New("device backend is unavailable")
+	}
+	conn, err := m.session.config.Backend.OpenService(ctx, m.session.config.Serial, "reverse:"+command)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return io.ReadAll(conn)
 }
 
 func reverseResponseOK(response []byte) bool {

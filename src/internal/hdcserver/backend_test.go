@@ -1,6 +1,7 @@
 package hdcserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -137,6 +138,35 @@ func TestSyncRecvStreamsHDCRemoteFile(t *testing.T) {
 		t.Fatalf("second sync response = %q %q, want DONE empty", id, payload)
 	}
 	server.assertCommandContains(t, "shell if ", "/data/local/tmp/pulled.txt")
+}
+
+func TestParseRemoteEntryRejectsInvalidMetadata(t *testing.T) {
+	for _, line := range []string{
+		"f\tnot-size\t0\tbad.txt",
+		"f\t1\tnot-mtime\tbad.txt",
+		"x\t1\t0\tbad.txt",
+	} {
+		if _, err := parseRemoteEntry(line); err == nil {
+			t.Fatalf("parseRemoteEntry(%q) error = nil, want error", line)
+		}
+	}
+}
+
+func TestReadHDCFrameRejectsOversizeFrame(t *testing.T) {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], maxHDCFrameSize+1)
+	if _, err := readHDCFrame(bytes.NewReader(header[:])); err == nil {
+		t.Fatal("readHDCFrame() error = nil, want oversize error")
+	}
+}
+
+func TestReadSyncRequestRejectsOversizePayload(t *testing.T) {
+	var request [8]byte
+	copy(request[:4], "DATA")
+	binary.LittleEndian.PutUint32(request[4:], maxSyncPayloadSize+1)
+	if _, _, err := readSyncRequest(bytes.NewReader(request[:])); err == nil {
+		t.Fatal("readSyncRequest() error = nil, want oversize error")
+	}
 }
 
 type fakeHDCServer struct {

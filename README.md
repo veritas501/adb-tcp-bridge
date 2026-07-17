@@ -105,6 +105,12 @@ If your HDC server only has one target, `any` is usually sufficient.
 `-hdc-server` only needs to be set when your HDC server is not listening on the
 default `127.0.0.1:8710`.
 
+## More documentation
+
+- [Usage guide](docs/usage.md)
+- [Code architecture](docs/architecture.md)
+- [Implementation details](docs/implementation.md)
+
 ## Scope
 
 Implemented:

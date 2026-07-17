@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -21,6 +23,47 @@ func TestReverseProtocolHelpers(t *testing.T) {
 		t.Fatalf("resolvedReverseLocal() = %q, want tcp:12345", got)
 	}
 }
+
+func TestRunDeviceReverseUsesConfiguredBackend(t *testing.T) {
+	backend := &recordingReverseBackend{response: []byte("OKAY")}
+	_, server := newMemoryConn()
+	defer server.Close()
+
+	session := newSession(Config{Serial: "SERIAL", Backend: backend}, server)
+	response, err := session.reverse.runDeviceReverse(context.Background(), "list-forward")
+	if err != nil {
+		t.Fatalf("runDeviceReverse() error = %v", err)
+	}
+	if !bytes.Equal(response, []byte("OKAY")) {
+		t.Fatalf("runDeviceReverse() = %q, want OKAY", response)
+	}
+	if backend.serial != "SERIAL" || backend.service != "reverse:list-forward" {
+		t.Fatalf("backend call = (%q, %q), want (SERIAL, reverse:list-forward)", backend.serial, backend.service)
+	}
+}
+
+type recordingReverseBackend struct {
+	serial   string
+	service  string
+	response []byte
+}
+
+func (b *recordingReverseBackend) OpenService(ctx context.Context, serial string, service string) (net.Conn, error) {
+	b.serial = serial
+	b.service = service
+	client, server := net.Pipe()
+	go func() {
+		_, _ = server.Write(b.response)
+		_ = server.Close()
+	}()
+	return client, nil
+}
+
+func (b *recordingReverseBackend) ReadProperties(ctx context.Context, serial string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (b *recordingReverseBackend) Description() string { return "recording" }
 
 func TestOpenOutboundSendsOpenAndForwardsData(t *testing.T) {
 	adbClient, adbServer := newMemoryConn()
