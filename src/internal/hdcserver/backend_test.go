@@ -57,6 +57,126 @@ func TestShellServiceBridgesHDCFrames(t *testing.T) {
 	server.assertCommand(t, "shell whoami")
 }
 
+func TestLocalAbstractServiceUsesHDCFport(t *testing.T) {
+	server := newFakeHDCServer(t)
+	backend := New(server.addr)
+	backend.Timeout = 5 * time.Second
+
+	conn, err := backend.OpenService(context.Background(), "SERIAL", "localabstract:lldb-platform-live")
+	if err != nil {
+		t.Fatalf("OpenService(localabstract:) error = %v", err)
+	}
+
+	output := make([]byte, len(server.forwardPayload))
+	if _, err := io.ReadFull(conn, output); err != nil {
+		t.Fatalf("ReadFull(localabstract) error = %v", err)
+	}
+	if got, want := string(output), string(server.forwardPayload); got != want {
+		t.Fatalf("localabstract payload = %q, want %q", got, want)
+	}
+
+	setupCmd := <-server.commands
+	if !strings.HasPrefix(setupCmd, "fport tcp:") || !strings.HasSuffix(setupCmd, " localabstract:lldb-platform-live") {
+		t.Fatalf("setup command = %q, want fport tcp:<port> localabstract:lldb-platform-live", setupCmd)
+	}
+	localNode := strings.Fields(setupCmd)[1]
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Close 会异步撤销 fport；等待 cleanup 发出的 rm 命令。
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case cmd := <-server.commands:
+			if cmd == "fport rm "+localNode+" localabstract:lldb-platform-live" {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for fport rm of %s", localNode)
+		}
+	}
+}
+
+func TestLocalFilesystemServiceMapsToHDCFport(t *testing.T) {
+	server := newFakeHDCServer(t)
+	backend := New(server.addr)
+	backend.Timeout = 5 * time.Second
+
+	conn, err := backend.OpenService(context.Background(), "SERIAL", "local:/dev/socket/paramservice")
+	if err != nil {
+		t.Fatalf("OpenService(local:) error = %v", err)
+	}
+	defer conn.Close()
+
+	setupCmd := <-server.commands
+	if !strings.HasPrefix(setupCmd, "fport tcp:") || !strings.HasSuffix(setupCmd, " localfilesystem:/dev/socket/paramservice") {
+		t.Fatalf("setup command = %q, want fport ... localfilesystem:/dev/socket/paramservice", setupCmd)
+	}
+}
+
+func TestParseForwardService(t *testing.T) {
+	tests := []struct {
+		service string
+		remote  string
+		ok      bool
+	}{
+		{"localabstract:lldb-platform-live", "localabstract:lldb-platform-live", true},
+		{"localabstract:@lldb-platform-live", "localabstract:@lldb-platform-live", true},
+		{"localfilesystem:/tmp/x", "localfilesystem:/tmp/x", true},
+		{"localreserved:name", "localreserved:name", true},
+		{"tcp:12345", "tcp:12345", true},
+		{"local:/dev/socket/x", "localfilesystem:/dev/socket/x", true},
+		{"localabstract:", "", false},
+		{"tcp:", "", false},
+		{"tcp:abc", "", false},
+		{"shell:ls", "", false},
+		{"sync:", "", false},
+	}
+	for _, tt := range tests {
+		remote, ok := parseForwardService(tt.service)
+		if ok != tt.ok || remote != tt.remote {
+			t.Fatalf("parseForwardService(%q) = (%q, %v), want (%q, %v)", tt.service, remote, ok, tt.remote, tt.ok)
+		}
+	}
+}
+
+func TestOpenServiceRejectsUnsupportedService(t *testing.T) {
+	backend := New("127.0.0.1:1")
+	_, err := backend.OpenService(context.Background(), "SERIAL", "jdwp:123")
+	if err == nil {
+		t.Fatal("OpenService(jdwp:) error = nil, want unsupported error")
+	}
+	if !strings.Contains(err.Error(), "does not support adb service") {
+		t.Fatalf("error = %v, want unsupported service message", err)
+	}
+}
+
+func TestLocalAbstractMissingNodeFailsOpen(t *testing.T) {
+	server := newFakeHDCServer(t)
+	backend := New(server.addr)
+	backend.Timeout = 5 * time.Second
+
+	_, err := backend.OpenService(context.Background(), "SERIAL", "localabstract:missing-gdbserver")
+	if err == nil {
+		t.Fatal("OpenService(missing abstract) error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "remote closed immediately") {
+		t.Fatalf("error = %v, want remote closed immediately", err)
+	}
+
+	// setup 后 cleanup 会 rm；至少应有一条 fport 命令。
+	select {
+	case cmd := <-server.commands:
+		if !strings.HasPrefix(cmd, "fport tcp:") {
+			t.Fatalf("first command = %q, want fport setup", cmd)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for fport setup command")
+	}
+}
+
 func TestSyncSendUsesHDCFileSendCommand(t *testing.T) {
 	server := newFakeHDCServer(t)
 	backend := New(server.addr)
@@ -179,6 +299,13 @@ type fakeHDCServer struct {
 	remoteFile     string
 	recvRemoteFile string
 	closeOnce      sync.Once
+
+	// fport 规则：localNode -> remoteNode，并持有对应本地 listener。
+	// 用于模拟 HDC fport 把设备侧节点暴露为 host TCP。
+	forwardMu      sync.Mutex
+	forwardRules   map[string]string
+	forwardListen  map[string]net.Listener
+	forwardPayload []byte
 }
 
 func newFakeHDCServer(t *testing.T) *fakeHDCServer {
@@ -197,7 +324,11 @@ func newFakeHDCServer(t *testing.T) *fakeHDCServer {
 		sentFile:       filepath.Join(dir, "sent"),
 		remoteFile:     filepath.Join(dir, "remote"),
 		recvRemoteFile: filepath.Join(dir, "recv_remote"),
+		forwardRules:   make(map[string]string),
+		forwardListen:  make(map[string]net.Listener),
+		forwardPayload: []byte("forward-payload"),
 	}
+
 	go server.serve()
 	t.Cleanup(server.close)
 	return server
@@ -270,6 +401,115 @@ func (s *fakeHDCServer) handle(conn net.Conn) {
 		_ = writeHDCFrame(conn, nil)
 	case strings.HasPrefix(command, "file send remote "):
 		s.handleNativeFileSend(conn, command)
+	case strings.HasPrefix(command, "fport "):
+		s.handleFport(conn, command)
+	}
+}
+
+// handleFport 模拟 HDC fport / fport rm。setup 时在指定本地 TCP 端口监听，
+// accept 后回写固定 payload，便于验证 OpenService(localabstract:) 的 dial 路径。
+func (s *fakeHDCServer) handleFport(conn net.Conn, command string) {
+	fields := strings.Fields(command)
+	if len(fields) < 2 {
+		_ = writeHDCFrame(conn, []byte("[Fail]Incorrect forward command\r\n"))
+		return
+	}
+	switch fields[1] {
+	case "rm":
+		if len(fields) < 4 {
+			_ = writeHDCFrame(conn, []byte("[Fail]Incorrect forward command\r\n"))
+			return
+		}
+		localNode := fields[2]
+		remoteNode := fields[3]
+		s.forwardMu.Lock()
+		currentRemote, ok := s.forwardRules[localNode]
+		listener := s.forwardListen[localNode]
+		if ok && currentRemote == remoteNode {
+			delete(s.forwardRules, localNode)
+			delete(s.forwardListen, localNode)
+		} else {
+			ok = false
+		}
+		s.forwardMu.Unlock()
+		if !ok {
+			_ = writeHDCFrame(conn, []byte("[Fail]Remove forward ruler failed, ruler is not exist "+localNode+" "+remoteNode+"\r\n"))
+			return
+		}
+		if listener != nil {
+			_ = listener.Close()
+		}
+		_ = writeHDCFrame(conn, []byte("Remove forward ruler success, ruler:"+localNode+" "+remoteNode+"\r\n"))
+		return
+	case "ls":
+		s.forwardMu.Lock()
+		var lines []string
+		for localNode, remoteNode := range s.forwardRules {
+			lines = append(lines, "SERIAL\t"+localNode+" "+remoteNode+"\t[Forward]")
+		}
+		s.forwardMu.Unlock()
+		if len(lines) == 0 {
+			_ = writeHDCFrame(conn, []byte("[Empty]\r\n"))
+			return
+		}
+		_ = writeHDCFrame(conn, []byte(strings.Join(lines, "\n")+"\n"))
+		return
+	}
+
+	if len(fields) != 3 {
+		_ = writeHDCFrame(conn, []byte("[Fail]Incorrect forward command\r\n"))
+		return
+	}
+	localNode := fields[1]
+	remoteNode := fields[2]
+	if !strings.HasPrefix(localNode, "tcp:") {
+		_ = writeHDCFrame(conn, []byte("[Fail]Forward parament failed\r\n"))
+		return
+	}
+	port := strings.TrimPrefix(localNode, "tcp:")
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		_ = writeHDCFrame(conn, []byte("[Fail]TCP Port listen failed at "+port+"\r\n"))
+		return
+	}
+
+	s.forwardMu.Lock()
+	if _, exists := s.forwardRules[localNode]; exists {
+		s.forwardMu.Unlock()
+		_ = listener.Close()
+		_ = writeHDCFrame(conn, []byte("[Fail]TCP Port listen failed at "+port+"\r\n"))
+		return
+	}
+	s.forwardRules[localNode] = remoteNode
+	s.forwardListen[localNode] = listener
+	payload := append([]byte(nil), s.forwardPayload...)
+	s.forwardMu.Unlock()
+
+	go s.serveForwardListener(localNode, listener, payload)
+	_ = writeHDCFrame(conn, []byte("Forwardport result:OK\r\n"))
+}
+
+func (s *fakeHDCServer) serveForwardListener(localNode string, listener net.Listener, payload []byte) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		// 约定：remote 名以 missing- 开头时模拟“目标 abstract 不存在”——
+		// dial 成功后立刻关闭，对应真实 HDC 对缺失节点的行为。
+		s.forwardMu.Lock()
+		remote := s.forwardRules[localNode]
+		s.forwardMu.Unlock()
+		if strings.HasPrefix(remote, "localabstract:missing-") || strings.HasPrefix(remote, "localfilesystem:missing-") {
+			_ = conn.Close()
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			_, _ = c.Write(payload)
+			buf := make([]byte, 64)
+			_, _ = c.Read(buf)
+		}(conn)
 	}
 }
 
@@ -384,8 +624,25 @@ func (s *fakeHDCServer) assertSerial(t *testing.T, want string) {
 	}
 }
 
+func (s *fakeHDCServer) closeForwards() {
+	s.forwardMu.Lock()
+	listeners := make([]net.Listener, 0, len(s.forwardListen))
+	for localNode, listener := range s.forwardListen {
+		listeners = append(listeners, listener)
+		delete(s.forwardListen, localNode)
+		delete(s.forwardRules, localNode)
+	}
+	s.forwardMu.Unlock()
+	for _, listener := range listeners {
+		if listener != nil {
+			_ = listener.Close()
+		}
+	}
+}
+
 func (s *fakeHDCServer) close() {
 	s.closeOnce.Do(func() {
+		s.closeForwards()
 		_ = s.listener.Close()
 		<-s.done
 	})

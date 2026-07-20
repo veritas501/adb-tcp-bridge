@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"adb-tcp-bridge/src/internal/adbwire"
 )
@@ -153,8 +155,10 @@ func (s *service) write(payload []byte) error {
 	return err
 }
 
+// shouldLogReadError 判断读失败是否值得记 Error。
+// EOF、本端关闭、对端 RST/EPIPE 属于流正常结束或调试器断开，不刷错误日志。
 func (s *service) shouldLogReadError(err error) bool {
-	if err == nil || err == io.EOF || errors.Is(err, net.ErrClosed) {
+	if err == nil || isBenignConnClose(err) {
 		return false
 	}
 
@@ -164,6 +168,20 @@ func (s *service) shouldLogReadError(err error) bool {
 	default:
 		return true
 	}
+}
+
+func isBenignConnClose(err error) bool {
+	if err == nil || err == io.EOF || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	if isConnectionReset(err) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	// 兜底：部分平台把 RST 包成字符串错误。
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "forcibly closed") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 func (s *service) ack(remoteID uint32) {

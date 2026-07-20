@@ -112,6 +112,7 @@ flowchart LR
 
 - `shell:` / `exec:`：打开 HDC shell channel；shell v2 会在 ADB shell v2 packet 与 HDC channel payload 之间转换。
 - `sync:`：用 `net.Pipe` 暴露一个 ADB sync 连接，在 goroutine 中处理 `STAT`、`LIST`、`SEND`、`RECV`。
+- `localabstract:` / `localfilesystem:` / `localreserved:` / `tcp:` / `local:`：通过 HDC `fport` 在本机临时监听 TCP，再 dial 到该端口得到流式连接；关闭时 `fport rm` 撤销规则。
 - 设备属性：读取 `list targets -v`，再用 `shell param get ...` 补齐产品名称、型号和设备名。
 
 不在上述范围内的 service 会返回 `hdc backend does not support adb service ...`。

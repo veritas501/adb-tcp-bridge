@@ -100,7 +100,7 @@ make release-cross
    adb -s <bridge-host>:35555 shell
    ```
 
-HDC 后端当前翻译 `shell:`、`exec:` 和 `sync:` 服务，覆盖常见 `adb shell`、`adb push`、`adb pull` 路径；不支持任意 ADB service。
+HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / `localfilesystem:` / `localreserved:` / `tcp:` / `local:`（通过 HDC `fport`）；覆盖常见 `adb shell`、`adb push`、`adb pull` 和调试器 abstract socket 路径；不支持任意 ADB service。
 
 ## 参数
 

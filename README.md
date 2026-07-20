@@ -119,9 +119,10 @@ Implemented:
 - adb server host protocol framing: `4-hex length + command`.
 - hdc server channel framing: `4-byte big-endian length + payload`.
 - One adb server transport connection per opened ADB service.
-- HDC backend translation for `shell:`/`exec:` and `sync:` push/pull,
+- HDC backend translation for `shell:`/`exec:`, `sync:` push/pull,
   including recursive directory pull via `STAT`/`LIST` and file push through
-  HDC native `FileInit/FileCheck/FileBegin/FileData/FileFinish` task frames.
+  HDC native `FileInit/FileCheck/FileBegin/FileData/FileFinish` task frames,
+  and device-local services (`localabstract:`/`localfilesystem:`/`localreserved:`/`tcp:`/`local:`) via HDC `fport`.
 - `WRTE/OKAY` flow control for device-to-client data.
 - `adb reverse` commands, including reverse connection data proxying back to
   the external adb client transport.

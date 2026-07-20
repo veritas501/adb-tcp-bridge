@@ -104,6 +104,10 @@ func (b *Backend) OpenService(ctx context.Context, serial string, service string
 	if spec, ok := parseShellService(service); ok {
 		return b.openShell(ctx, serial, spec)
 	}
+	// localabstract/localfilesystem/localreserved/tcp 通过 HDC fport 暴露为本地 TCP 流。
+	if remoteNode, ok := parseForwardService(service); ok {
+		return b.openForward(ctx, serial, remoteNode)
+	}
 	return nil, fmt.Errorf("hdc backend does not support adb service %q", service)
 }
 
