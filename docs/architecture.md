@@ -4,14 +4,17 @@
 
 ```text
 src/
-  cmd/adb-tcp-bridge/   CLI 入口、参数解析、日志和 Server 组装
+  cmd/adb-tcp-bridge/   单二进制 CLI：子命令 + 兼容 adbb <serial>
+  internal/control/     控制协议类型与 socket/log 路径解析
+  internal/daemon/      多设备 Manager、UDS 控制面、日志落盘、backend 工厂
+  internal/client/      CLI 拨号、auto-start daemon、本地 logs tail/follow
   internal/bridge/      TCP listener、ADB 会话、service 转发、reverse 管理
   internal/adbwire/     ADB wire packet 编解码
   internal/adbhost/     本机 adb server host protocol client
   internal/hdcserver/   HDC server 后端与 ADB service 翻译
 ```
 
-设计中心是 `bridge.DeviceBackend`：上层会话只知道“打开某个 ADB service”和“读取设备属性”，不关心真实目标来自 adb server 还是 HDC server。
+设计中心仍是 `bridge.DeviceBackend`：上层会话只知道“打开某个 ADB service”和“读取设备属性”，不关心真实目标来自 adb server 还是 HDC server。
 
 ```go
 type DeviceBackend interface {
@@ -23,19 +26,32 @@ type DeviceBackend interface {
 
 ## 启动路径
 
-1. `main.go` 创建 Cobra root command。
-2. CLI 参数被解析为 `bridge.Config`。
-3. `newDeviceBackend` 按 `-backend` 选择：
-   - `adb`：`bridge.NewADBServerBackend(adbhost.New(serverAddr))`
-   - `hdc`：`hdcserver.New(hdcAddr)`
-4. `bridge.NewServer` 校验配置、补齐默认值，并通过后端读取设备属性生成 ADB `DeviceID`。
-5. `Server.ListenAndServe` 从 `ListenStartPort` 开始监听 TCP，端口占用时向上递增。
-6. 每个外部 adb client 连接都会创建一个独立 `session`。
+```text
+CLI (adbb start/list/status/…)
+  -> client.Call  (UDS NDJSON)
+      -> 若 socket 不可达且允许 auto-start：exec 自身 "daemon"
+  -> daemon.Server.handleConn
+      -> Manager.Start / Stop / List / …
+          -> bridge.NewServer + Listen + Serve (per serial)
+```
+
+1. `main.go` 创建 Cobra root 与子命令（`daemon` / `start` / `stop` / `list` / `status` / `logs` / `kill-server`）。
+2. 控制类命令通过 `client.Client` 连接 Unix socket；`start`/`list`/`status` 在 dial 失败时 auto-start daemon。
+3. `adbb daemon` 打开日志文件、创建 `Manager` 与控制面 `daemon.Server`，在 UDS 上 accept。
+4. `OpStart` 时 handler 用 `daemon.NewDeviceBackend` 构造后端，调用 `Manager.Start`：
+   - `bridge.NewServer` 校验配置并生成 DeviceID；
+   - `Server.Listen` 从 `ListenStartPort` 起绑定 TCP；
+   - 后台 goroutine `Server.Serve` 接受外部 adb 连接。
+5. 每个外部 adb client 连接创建一个独立 `session`。
+6. 日志：daemon 进程内 `OpenLogger` 写入与 socket 同目录的 `adbb.log`（可 `ADBB_LOG` / `--log-file` 覆盖）；`adbb logs` 只读本地文件，不经 UDS 流式传输。
 
 ## 核心数据流
 
 ```mermaid
 flowchart LR
+    CLI[adbb CLI] -->|UDS NDJSON| DS[daemon.Server]
+    DS --> M[Manager]
+    M -->|Listen+Serve| BS[bridge.Server]
     C[external adb client] -->|ADB wire packets| S[bridge session]
     S -->|OPEN service| B{DeviceBackend}
     B -->|host:transport + service| A[local adb server]
@@ -45,17 +61,32 @@ flowchart LR
     S -->|reverse local handler| R[reverseManager]
 ```
 
+## 控制面
+
+- 协议：一行 JSON 请求 + 一行 JSON 响应（`internal/control`）。
+- 操作：`start` / `stop` / `list` / `status` / `shutdown` / `version`。
+- 路径：`control.SocketPath` / `control.LogPath`（显式参数 → 环境变量 → XDG/HOME 默认）。
+- `kill-server`、`logs`、`stop` 不 auto-start；仅 `start`/`list`/`status` 会拉起 daemon。
+
 ## `bridge.Server`
 
-`Server` 负责生命周期边界：
+`Server` 负责单设备生命周期边界：
 
 - 校验监听地址、端口、serial/connect key、auth mode。
 - 选择默认 host/backend/logger。
 - 读取设备属性，生成 ADB `CNXN` 使用的 device banner。
-- 创建 TCP listener；端口冲突时从起始端口向上探测。
-- 为每个外部连接启动独立 session，并在 context 取消时关闭 listener、等待 session goroutine 退出。
+- `Listen`：创建 TCP listener；端口冲突时从起始端口向上探测，返回 listener 供 Manager 记录 `listen_addr`。
+- `Serve`：为每个外部连接启动独立 session；context 取消时关闭 listener、等待 session 退出。
+- `ListenAndServe`：`Listen` + `Serve` 薄封装（测试/兼容）。
 
 `Server` 不解析 ADB packet，也不理解具体 service；这些职责属于 `session` 和 `service`。
+
+## `daemon.Manager`
+
+- 按 serial 管理多个 `bridge.Server`。
+- `Start`：Listen 成功后登记 running，Serve 在 goroutine 中运行；Serve 退出后从 map 删除。
+- `Stop` / `StopAll`：cancel + 等待 done。
+- 同 serial 重复 Start 失败。
 
 ## `bridge.session`
 
@@ -117,16 +148,20 @@ flowchart LR
 
 不在上述范围内的 service 会返回 `hdc backend does not support adb service ...`。
 
+工厂：`daemon.NewDeviceBackend`（CLI 与 daemon handler 共用）。
+
 ## 并发和关闭模型
 
+- daemon 控制连接：一连接一请求，处理完关闭。
 - 一个 TCP client 连接对应一个 `session.run` goroutine。
 - 每个 `OPEN` service 会启动自己的转发 goroutine。
 - `session.writeMu` 保护 ADB packet 写入；`service.connMu` 保护底层 `net.Conn` 指针；service 的 `done` channel 负责关闭广播。
 - session 关闭时会复制并清空 service map，然后逐个关闭 service，最后清理 reverse mappings 并关闭 TCP 连接。
-- server context 取消时关闭 listener，停止接收新连接，并等待已启动 session 结束。
+- bridge context 取消时关闭 listener，停止接收新连接，并等待已启动 session 结束。
+- daemon shutdown：先响应 `shutdown`，再 cancel root ctx，关闭 UDS listener，`Manager.StopAll`。
 
 ## 扩展点
 
-- 新增真实设备后端：实现 `bridge.DeviceBackend`，在 CLI 的 `newDeviceBackend` 中注册。
+- 新增真实设备后端：实现 `bridge.DeviceBackend`，在 `daemon.NewDeviceBackend` 中注册。
 - 新增本地合成 service：在 `session.localHandler` 按 service 前缀登记 handler，避免把特殊控制流塞进普通转发路径。
 - 扩展 HDC 支持：优先在 `hdcserver.Backend.OpenService` 明确列出可支持的 ADB service；不要让未知 service 静默降级。

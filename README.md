@@ -5,14 +5,21 @@ endpoint. External adb clients connect to the bridge over TCP; the bridge
 translates device-side ADB packets into either the local adb server host
 protocol or the HDC host/server protocol.
 
+A single **daemon** process can manage multiple devices. Short-lived CLI
+commands (`start` / `stop` / `list` / …) talk to the daemon over a Unix domain
+socket and auto-start it when needed.
+
 The bridge never touches USB directly — the local adb server (usually
 `127.0.0.1:5037`) keeps owning the real USB transport.
 
 ```text
 external adb client
-  --TCP--> adb-tcp-bridge
+  --TCP--> adb-tcp-bridge (per-device listener)
     --adb host protocol--> local adb server --> Android adbd
     --hdc host protocol--> hdc server       --> OpenHarmony hdcd
+
+CLI (adbb start/stop/list/…)
+  --Unix socket--> daemon control plane --> multi-device Manager
 ```
 
 ## Why
@@ -28,8 +35,9 @@ machine.
 
 - **Go 1.22+** (declared in `go.mod`) — only needed to build from source.
 - **adb** (Android SDK platform-tools) on the host running the bridge, with the
-  local adb server reachable at the address passed via `-server`.
-- **One USB-connected Android device** already visible to the local adb server.
+  local adb server reachable at the address passed via `--server`.
+- **One USB-connected Android device** already visible to the local adb server
+  (or an HDC target when using `--backend hdc`).
 
 Start the local adb server and confirm the device is attached before launching
 the bridge:
@@ -42,59 +50,69 @@ adb devices   # copy the <serial> of your USB device
 ## Quickstart
 
 ```bash
-make release                 # builds ./adbb (stripped, trimmed)
-./adbb <serial>              # listens on 0.0.0.0:35555 by default
+make release                      # builds ./adbb (stripped, trimmed)
+./adbb start <serial>             # auto-starts daemon; prints listen_addr
 ```
 
 From another machine (or the same one), connect a regular adb client to the
-bridge:
+printed address:
 
 ```bash
-adb connect <bridge-host>:35555
+adb connect <bridge-host>:35555   # use the port from start output if different
 adb devices
 ```
 
-You should see the bridge log a `listening` line reporting the actual
-`listen_addr`, then `connect from host` as the adb client attaches. After
-`adb connect`, `adb devices` lists the device as `<bridge-host>:35555  device`
-and you can run `adb shell`, `adb push`, etc. against it.
+`adbb start` is short-lived: it prints one `listen_addr` line and exits. The
+daemon keeps the bridge running in the background. Daemon logs go to a fixed
+log file (see below); use `adbb logs` / `adbb logs -f` to inspect them.
 
 > If `35555` is already in use, the bridge automatically tries the next port
-> upward and logs the real `listen_addr` — use that port in `adb connect`.
+> upward. Always use the address printed by `adbb start`.
 
-## Usage
+Legacy form `adbb <serial>` is equivalent to `adbb start <serial>`.
 
-```
-adbb [flags] <serial|connect-key>
-```
+## Commands
 
-For the ADB backend, `<serial>` is the serial reported by `adb devices` for the
-USB-connected Android device. For the HDC backend, `<connect-key>` is the target
-reported by `hdc list targets` and accepted by `hdc -t`. Exactly one positional
-argument is expected.
+| Command | Description |
+|---------|-------------|
+| `adbb start [flags] <serial>` | Start a bridge for one device; prints `listen_addr`. Auto-starts daemon. |
+| `adbb stop <serial>` | Stop one bridge. |
+| `adbb list` | List running bridges (`serial`, `backend`, `listen_addr`, `state`). |
+| `adbb status [serial]` | Daemon/bridge status; includes `log_path`. |
+| `adbb logs [-n N] [-f]` | Read local daemon log file (default last 200 lines; `-f` follow). |
+| `adbb kill-server` | Shut down the daemon. |
+| `adbb daemon` | Run the daemon in the foreground (stderr + log file). |
 
-### Flags
+### Shared flags
+
+| Flag / env | Default | Description |
+|------------|---------|-------------|
+| `--socket` / `ADBB_SOCKET` | `$XDG_RUNTIME_DIR/adbb/adbb.sock` or `~/.adbb/adbb.sock` | Daemon control socket. |
+| `--log-file` / `ADBB_LOG` | same directory as socket: `adbb.log` | Daemon log file. |
+| `--log-level` | `info` | Log level for daemon: `debug`, `info`, `warn`, `error`. |
+
+### `start` flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-host` | `0.0.0.0` | TCP listen host. |
-| `-port` | `35555` | First TCP listen port to try. If occupied, the bridge walks upward until a free port is found. |
-| `-server` | `127.0.0.1:5037` | Local adb server address. |
-| `-backend` | `adb` | Target backend: `adb` or `hdc`. |
-| `-hdc-server` | `127.0.0.1:8710` | HDC server address when `-backend hdc`. |
-| `-auth` | `accept-all` | Auth mode: `accept-all` (accept any adb public key) or `none` (skip the auth handshake). |
-| `-log-level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
+| `--host` | `0.0.0.0` | TCP listen host. |
+| `--port` | `35555` | First TCP listen port to try. If occupied, walks upward. |
+| `--server` | `127.0.0.1:5037` | Local adb server address. |
+| `--backend` | `adb` | Target backend: `adb` or `hdc`. |
+| `--hdc-server` | `127.0.0.1:8710` | HDC server address when `--backend hdc`. |
+| `--auth` | `accept-all` | Auth mode: `accept-all` or `none`. |
 
-Example — listen on a fixed port and forward through a non-default adb server:
+Example — fixed port, debug logging via daemon:
 
 ```bash
-./adbb -port 40000 -server 127.0.0.1:5037 -log-level debug <serial>
+./adbb start --port 40000 --log-level debug <serial>
+./adbb logs -n 50
 ```
 
 Expose an OpenHarmony device through an existing HDC server:
 
 ```bash
-./adbb -backend hdc <hdc-target>
+./adbb start --backend hdc <hdc-target>
 adb connect <bridge-host>:35555
 adb -s <bridge-host>:35555 shell
 ```
@@ -102,8 +120,6 @@ adb -s <bridge-host>:35555 shell
 For the HDC backend, `<hdc-target>` is a value from `hdc list targets` and is
 passed to the HDC server as the same connect key used by `hdc -t <hdc-target>`.
 If your HDC server only has one target, `any` is usually sufficient.
-`-hdc-server` only needs to be set when your HDC server is not listening on the
-default `127.0.0.1:8710`.
 
 ## More documentation
 
@@ -115,6 +131,8 @@ default `127.0.0.1:8710`.
 
 Implemented:
 
+- Multi-device daemon + short-lived CLI over Unix domain socket control plane.
+- Auto-start daemon on `start` / `list` / `status`; local log file + `adbb logs`.
 - ADB packet codec for `SYNC/CNXN/AUTH/OPEN/OKAY/WRTE/CLSE`.
 - adb server host protocol framing: `4-hex length + command`.
 - hdc server channel framing: `4-byte big-endian length + payload`.
@@ -134,6 +152,7 @@ Not implemented:
 - Wireless Debugging TLS transport (`A_STLS` / `STLS`).
 - Full adb server host-side commands such as `host:devices`.
 - RSA signature verification for bridge-side auth.
+- Log rotation (v1 appends continuously).
 
 ## Development
 

@@ -2,13 +2,50 @@
 
 ## 协议分层
 
-`adb-tcp-bridge` 同时面对三类协议边界：
+`adb-tcp-bridge` 同时面对四类协议边界：
 
-1. 外部 adb client 使用 ADB wire packet 连接 bridge。
-2. ADB 后端使用 adb server host protocol 连接本机 adb server。
-3. HDC 后端使用 HDC server channel/frame 协议连接 OpenHarmony 设备。
+1. CLI 与 daemon 之间使用 Unix domain socket 上的 **NDJSON 控制协议**（一行请求、一行响应）。
+2. 外部 adb client 使用 ADB wire packet 连接 bridge。
+3. ADB 后端使用 adb server host protocol 连接本机 adb server。
+4. HDC 后端使用 HDC server channel/frame 协议连接 OpenHarmony 设备。
 
-bridge 的核心实现策略是：保留外部 ADB wire 语义，把每个 ADB `OPEN` service 映射成一个 `net.Conn`，再由不同后端负责连接真实目标。
+bridge 的核心实现策略是：保留外部 ADB wire 语义，把每个 ADB `OPEN` service 映射成一个 `net.Conn`，再由不同后端负责连接真实目标。daemon 只负责多设备生命周期与控制面，不参与 ADB wire。
+
+## 控制协议（CLI ↔ daemon）
+
+实现位置：`src/internal/control/`、`src/internal/daemon/handler.go`、`src/internal/client/`。
+
+- 传输：Unix domain socket（路径见 `control.SocketPath`）。
+- 帧：单连接单请求；client 写一行 JSON + `\n`，读一行 JSON 后关连接。
+- 版本：`ProtocolVersion = 1`；`op=version` 返回版本号。
+
+| op | 行为 |
+|----|------|
+| `start` | 校验 serial，构造 backend，`Manager.Start`；成功返回 `bridge` |
+| `stop` | `Manager.Stop` |
+| `list` | `Manager.List` → `bridges` |
+| `status` | 有 serial：单条；无 serial：等价 list；可带 `log_path` |
+| `shutdown` | 先写成功响应，再 cancel daemon root ctx |
+| `version` | `{ok:true, version:1}` |
+
+错误一律 `ok:false` + `error` 字符串。
+
+### Auto-start
+
+`client.Call` 在 dial 失败且允许 auto-start 时：
+
+1. `exec` 当前可执行文件：`adbb daemon --socket … --log-file … --log-level …`
+2. Unix 上 `Setsid: true` 分离；不 Wait 子进程。
+3. 轮询 dial 直至成功或 `StartTimeout`（默认 5s）。
+
+仅 `start` / `list` / `status` auto-start；`stop` / `kill-server` / `logs` 不拉起。
+
+### 日志落盘与 `adbb logs`
+
+- daemon 内 `OpenLogger`：`O_APPEND|O_CREATE|O_WRONLY` 0600；ConsoleWriter 时间格式 `01-02 15:04:05`；`adbb daemon` 同时写 stderr 与文件。
+- 路径：`control.LogPath`（`--log-file` → `ADBB_LOG` → socket 同目录 `adbb.log`）。
+- v1 不做轮转。
+- `adbb logs`：本地 `TailFile` / `FollowFile`（200ms 轮询），**不经 UDS**；daemon 已退出仍可读历史。
 
 ## ADB wire packet
 
@@ -147,9 +184,20 @@ HDC 后端先运行 `list targets -v` 查找目标，再用 `shell param get` �
 
 `killforward`、`killforward-all` 和 session close 都会关闭本地 listener；`evict` 同时通知设备侧撤销对应 forward。
 
+## bridge Listen / Serve 拆分
+
+实现位置：`src/internal/bridge/server.go`。
+
+Manager 需要在 Serve 之前拿到 `listen_addr` 并独立 cancel 单个 bridge：
+
+- `Listen(ctx)`：端口递增绑定，返回 `net.Listener`。
+- `Serve(ctx, listener)`：打 `listening` 日志后 accept 循环；ctx 取消关闭 listener 并 `wg.Wait`。
+- `ListenAndServe`：二者组合。
+
 ## 错误处理原则
 
 - 协议格式错误直接终止当前 session 或 service，避免继续在不可信状态上转发。
 - 设备属性读取失败不会阻止服务启动；server 记录 warning 并使用 fallback banner。
 - HDC 后端对未知 ADB service 返回显式错误，不做静默 fallback。
 - 普通 EOF、主动关闭和 context 取消不作为错误日志输出；非预期读失败才记录 error。
+- 控制面错误统一 `ok:false` + 可读字符串；CLI 打印到 stderr 并以 exit 2 退出。

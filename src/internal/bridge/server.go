@@ -102,15 +102,16 @@ func formatDeviceID(properties map[string]string) string {
 	)
 }
 
-func (s *Server) ListenAndServe(ctx context.Context) error {
-	listener, err := s.listen(ctx)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
+// Listen binds a TCP listener starting at ListenStartPort, trying higher ports on EADDRINUSE.
+func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
+	return s.listen(ctx)
+}
 
+// Serve accepts connections on an already-bound listener until ctx is canceled.
+// On cancel it closes the listener and waits for in-flight sessions.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	s.config.Logger.Info().
-		Str("listen_addr", listener.Addr().String()).
+		Str("listen_addr", FormatListenAddr(s.config.ListenHost, listener.Addr())).
 		Str("serial", s.config.Serial).
 		Str("backend", s.config.Backend.Description()).
 		Msg("listening")
@@ -144,6 +145,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// ListenAndServe listens then serves until ctx is canceled.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	listener, err := s.Listen(ctx)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	return s.Serve(ctx, listener)
+}
+
 func (s *Server) listen(ctx context.Context) (net.Listener, error) {
 	listenConfig := &net.ListenConfig{}
 	for port := s.config.ListenStartPort; port <= 65535; port++ {
@@ -157,6 +168,31 @@ func (s *Server) listen(ctx context.Context) (net.Listener, error) {
 		}
 	}
 	return nil, fmt.Errorf("no available listen port from %d", s.config.ListenStartPort)
+}
+
+// FormatListenAddr builds a human-usable host:port for CLI and logs.
+// Dual-stack wildcard listeners often report [::]:port; prefer the configured
+// ListenHost so default output is "0.0.0.0:35557" instead of "[::]:35557".
+func FormatListenAddr(configuredHost string, addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host := configuredHost
+	if host == "" {
+		host = DefaultListenHost
+	}
+	var port string
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		port = strconv.Itoa(a.Port)
+	default:
+		_, p, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return addr.String()
+		}
+		port = p
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func isAddrInUse(err error) bool {

@@ -49,7 +49,7 @@ func TestListenTriesNextPortWhenStartPortIsBusy(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	listener, err := server.listen(context.Background())
+	listener, err := server.Listen(context.Background())
 	if err != nil {
 		t.Fatalf("listen() error = %v", err)
 	}
@@ -65,6 +65,24 @@ func TestListenTriesNextPortWhenStartPortIsBusy(t *testing.T) {
 	}
 	if port != startPort+1 {
 		t.Fatalf("listen port = %d, want %d", port, startPort+1)
+	}
+}
+
+func TestFormatListenAddrPrefersConfiguredHost(t *testing.T) {
+	addr := &net.TCPAddr{IP: net.IPv6zero, Port: 35557}
+	got := FormatListenAddr("0.0.0.0", addr)
+	want := "0.0.0.0:35557"
+	if got != want {
+		t.Fatalf("FormatListenAddr() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatListenAddrKeepsExplicitHost(t *testing.T) {
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40000}
+	got := FormatListenAddr("127.0.0.1", addr)
+	want := "127.0.0.1:40000"
+	if got != want {
+		t.Fatalf("FormatListenAddr() = %q, want %q", got, want)
 	}
 }
 
