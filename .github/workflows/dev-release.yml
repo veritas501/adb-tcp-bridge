@@ -1,0 +1,123 @@
+name: Dev Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: dev
+
+jobs:
+  build-and-release:
+    name: Build and publish dev release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+
+      - name: Compute build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short HEAD)"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "version=dev-${short_sha}"
+            echo "commit=${short_sha}"
+            echo "date=${build_date}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: make test
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make release-cross \
+            VERSION="${{ steps.meta.outputs.version }}" \
+            COMMIT="${{ steps.meta.outputs.commit }}" \
+            DATE="${{ steps.meta.outputs.date }}"
+
+      - name: Smoke test Linux binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./dist/atb-linux-amd64 version | tee version.txt
+          grep -F "adb-tcp-bridge ${{ steps.meta.outputs.version }}" version.txt
+          grep -F "commit: ${{ steps.meta.outputs.commit }}" version.txt
+          grep -F "built: ${{ steps.meta.outputs.date }}" version.txt
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            tar -C dist -czf "release/atb-${target}.tar.gz" "atb-${target}"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          for target in ("windows-amd64", "windows-arm64"):
+              binary = f"atb-{target}.exe"
+              with ZipFile(Path("release") / f"atb-{target}.zip", "w", ZIP_DEFLATED) as zf:
+                  zf.write(Path("dist") / binary, arcname=binary)
+          PY
+
+          rm -f release/checksums.txt
+          (cd release && sha256sum atb-* | sort -k2 > checksums.txt)
+
+      - name: Publish mutable dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}" --force
+
+          notes="$(mktemp)"
+          cat > "$notes" <<EOF
+          Automated dev release from ${GITHUB_SHA}.
+
+          - Version: ${{ steps.meta.outputs.version }}
+          - Commit: ${{ steps.meta.outputs.commit }}
+          - Build date: ${{ steps.meta.outputs.date }}
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+            gh release edit "$RELEASE_TAG" --title "Dev Release" --notes-file "$notes" --prerelease
+          else
+            gh release create "$RELEASE_TAG" release/* --title "Dev Release" --notes-file "$notes" --prerelease --latest=false --target "$GITHUB_SHA"
+          fi
