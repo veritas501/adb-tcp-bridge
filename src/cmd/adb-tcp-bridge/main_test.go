@@ -67,12 +67,12 @@ func assertRootHelp(t *testing.T, text string) {
 		"status",
 		"logs",
 		"kill-server",
+		"version",
 		"daemon",
 		"--socket",
 		"ATB_SOCKET",
 		"Examples:",
 		"atb start <serial>",
-		"Auto-start daemon",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("root help missing %q; got:\n%s", want, text)
@@ -83,6 +83,11 @@ func assertRootHelp(t *testing.T, text string) {
 	}
 	if strings.Count(text, "Examples:") != 1 {
 		t.Fatalf("Examples appears %d times; got:\n%s", strings.Count(text, "Examples:"), text)
+	}
+	for _, unwanted := range []string{"Auto-start daemon", "Control socket", "Log file", "Legacy form"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("root help should stay concise but contains %q; got:\n%s", unwanted, text)
+		}
 	}
 }
 
@@ -97,6 +102,22 @@ func TestStartHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "walks upward") {
 		t.Fatalf("start --help missing port note; got:\n%s", out.String())
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	cmd := newRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("version error = %v", err)
+	}
+	for _, want := range []string{"adb-tcp-bridge", "commit:", "built:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("version output missing %q; got:\n%s", want, out.String())
+		}
 	}
 }
 

@@ -80,6 +80,7 @@ Legacy form `atb <serial>` is equivalent to `atb start <serial>`.
 | `atb list` | List running bridges (`serial`, `backend`, `listen_addr`, `state`). |
 | `atb status [serial]` | Daemon/bridge status; includes `log_path`. |
 | `atb logs [-n N] [-f]` | Read local daemon log file (default last 200 lines; `-f` follow). |
+| `atb version` | Print binary version, commit, and build date. |
 | `atb kill-server` | Shut down the daemon. |
 | `atb daemon` | Run the daemon in the foreground (stderr + log file). |
 

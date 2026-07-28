@@ -17,6 +17,7 @@ import (
 	"adb-tcp-bridge/src/internal/control"
 	"adb-tcp-bridge/src/internal/daemon"
 	"adb-tcp-bridge/src/internal/hdcserver"
+	"adb-tcp-bridge/src/internal/version"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
@@ -46,26 +47,10 @@ func newRootCommand() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "atb",
-		Short: "Expose ADB/HDC-connected devices as ADB-over-TCP via a multi-device daemon",
-		// Long/Example are stable product notes only. Commands and flags are listed
-		// by cobra from AddCommand / flag registration so new subcommands show up
+		Short: "Expose ADB/HDC-connected devices as ADB-over-TCP",
+		// Examples are stable product notes only. Commands and flags are listed by
+		// cobra from AddCommand / flag registration so new subcommands show up
 		// without editing a hand-maintained help string.
-		Long: `A background daemon manages multiple devices. Short-lived CLI commands talk
-to it over a Unix domain socket.
-
-Auto-start daemon: start, list, status.
-Do not auto-start: stop, logs, kill-server.
-
-Control socket (--socket / ATB_SOCKET):
-  $XDG_RUNTIME_DIR/atb/atb.sock  or  ~/.atb/atb.sock
-
-Log file (--log-file / ATB_LOG):
-  <socket-dir>/atb.log
-
-Legacy form "atb <serial>" is equivalent to "atb start <serial>".
-Use the listen address printed by start (port walks upward from --port on conflict).
-Single-dash long flags are accepted (e.g. -backend hdc).
-See "atb <command> --help" for per-command flags.`,
 		Example: `  atb start <serial>
   atb start --host 0.0.0.0 --port 35555 <serial>
   atb start --backend hdc <hdc-target>
@@ -73,9 +58,6 @@ See "atb <command> --help" for per-command flags.`,
   atb list
   atb status
   atb logs -n 50
-  atb logs -f
-  atb stop <serial>
-  atb kill-server
   atb daemon --log-level debug`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -111,6 +93,7 @@ See "atb <command> --help" for per-command flags.`,
 	root.PersistentFlags().StringVar(&logLevel, "log-level", logLevel, "log level: debug, info, warn, error")
 
 	root.AddCommand(
+		newVersionCommand(),
 		newDaemonCommand(&socketFlag, &logFileFlag, &logLevel),
 		newStartCommand(&socketFlag, &logFileFlag, &logLevel),
 		newStopCommand(&socketFlag, &logFileFlag, &logLevel),
@@ -121,6 +104,17 @@ See "atb <command> --help" for per-command flags.`,
 	)
 
 	return root
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print build version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\ncommit: %s\nbuilt: %s\n", version.Module, version.Version, version.Commit, version.BuildDate)
+		},
+	}
 }
 
 func newDaemonCommand(socketFlag, logFileFlag, logLevel *string) *cobra.Command {
