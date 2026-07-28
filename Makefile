@@ -1,5 +1,5 @@
 GO ?= go
-BINARY := adbb
+BINARY := atb
 MAIN := ./src/cmd/adb-tcp-bridge
 DIST_DIR := dist
 RELEASE_FLAGS := -trimpath -ldflags "-s -w"

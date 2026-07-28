@@ -2,13 +2,13 @@
 
 ## 适用场景
 
-`adbb` 适合把只通过 USB 接到一台主机的设备临时暴露成网络上的 ADB 目标。外部机器使用普通 `adb connect <bridge-host>:<port>` 连接；桥接主机继续通过本机 `adb server` 或 `hdc server` 访问真实设备。
+`atb` 适合把只通过 USB 接到一台主机的设备临时暴露成网络上的 ADB 目标。外部机器使用普通 `adb connect <bridge-host>:<port>` 连接；桥接主机继续通过本机 `adb server` 或 `hdc server` 访问真实设备。
 
 一个 daemon 进程可同时管理多台设备。CLI 子命令通过 Unix domain socket 控制 daemon；`start` / `list` / `status` 在 daemon 未运行时会自动后台拉起。
 
 ```text
 external adb client
-  --TCP--> adbb (per-device listener)
+  --TCP--> atb (per-device listener)
     --adb host protocol--> local adb server --> Android adbd
     --hdc host protocol--> hdc server       --> OpenHarmony hdcd
 
@@ -31,7 +31,7 @@ CLI
 make release
 ```
 
-该命令生成当前平台的 `./adbb`。开发调试时也可以使用：
+该命令生成当前平台的 `./atb`。开发调试时也可以使用：
 
 ```bash
 make build
@@ -59,7 +59,7 @@ make release-cross
 2. 使用 `adb devices` 输出中的 `<serial>` 启动桥接：
 
    ```bash
-   ./adbb start <serial>
+   ./atb start <serial>
    ```
 
    命令打印一行 `listen_addr` 后退出。默认从 `0.0.0.0:35555` 起监听；端口占用时向上寻找，以打印的地址为准。daemon 若不存在会自动拉起。
@@ -76,8 +76,8 @@ make release-cross
 
    ```bash
    adb disconnect <bridge-host>:35555
-   ./adbb stop <serial>          # 停止该设备的 bridge
-   ./adbb kill-server            # 关闭整个 daemon
+   ./atb stop <serial>          # 停止该设备的 bridge
+   ./atb kill-server            # 关闭整个 daemon
    ```
 
 ## HDC 后端：暴露 OpenHarmony 设备
@@ -91,13 +91,13 @@ make release-cross
 2. 使用 HDC target 或 connect key 启动桥接：
 
    ```bash
-   ./adbb start --backend hdc <hdc-target>
+   ./atb start --backend hdc <hdc-target>
    ```
 
    如果 HDC server 不在默认地址，显式指定：
 
    ```bash
-   ./adbb start --backend hdc --hdc-server 127.0.0.1:8710 <hdc-target>
+   ./atb start --backend hdc --hdc-server 127.0.0.1:8710 <hdc-target>
    ```
 
 3. 外部仍使用普通 adb 客户端连接：
@@ -112,29 +112,29 @@ HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / 
 ## 多设备示例
 
 ```bash
-./adbb start serial-a
-./adbb start --port 40000 serial-b
-./adbb list
+./atb start serial-a
+./atb start --port 40000 serial-b
+./atb list
 # serial-a	adb	0.0.0.0:35555	running
 # serial-b	adb	0.0.0.0:40000	running
 
-./adbb stop serial-a
-./adbb status
+./atb stop serial-a
+./atb status
 ```
 
 ## 命令一览
 
 | 命令 | 说明 | 自动拉起 daemon |
 |------|------|-----------------|
-| `adbb start [flags] <serial>` | 启动一台设备的 bridge，stdout 打印 `listen_addr` | 是 |
-| `adbb stop <serial>` | 停止一台 | 否（daemon 未运行时报错） |
-| `adbb list` | 列出 running bridges | 是 |
-| `adbb status [serial]` | 状态摘要；含 `log_path` | 是 |
-| `adbb logs [-n N] [-f]` | 读本地 daemon 日志文件 | 否（只读文件） |
-| `adbb kill-server` | 关闭 daemon | 否（未运行时提示并 exit 0） |
-| `adbb daemon` | 前台运行 daemon（stderr + 日志文件） | — |
+| `atb start [flags] <serial>` | 启动一台设备的 bridge，stdout 打印 `listen_addr` | 是 |
+| `atb stop <serial>` | 停止一台 | 否（daemon 未运行时报错） |
+| `atb list` | 列出 running bridges | 是 |
+| `atb status [serial]` | 状态摘要；含 `log_path` | 是 |
+| `atb logs [-n N] [-f]` | 读本地 daemon 日志文件 | 否（只读文件） |
+| `atb kill-server` | 关闭 daemon | 否（未运行时提示并 exit 0） |
+| `atb daemon` | 前台运行 daemon（stderr + 日志文件） | — |
 
-兼容旧调用：`adbb <serial>` 等价于 `adbb start <serial>`（短生命周期，不阻塞）。
+兼容旧调用：`atb <serial>` 等价于 `atb start <serial>`（短生命周期，不阻塞）。
 
 ## 参数
 
@@ -142,8 +142,8 @@ HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / 
 
 | 参数 / 环境变量 | 默认值 | 说明 |
 |-----------------|--------|------|
-| `--socket` / `ADBB_SOCKET` | `$XDG_RUNTIME_DIR/adbb/adbb.sock`，否则 `~/.adbb/adbb.sock` | 控制面 Unix socket。 |
-| `--log-file` / `ADBB_LOG` | 与 socket 同目录的 `adbb.log` | daemon 日志文件。 |
+| `--socket` / `ATB_SOCKET` | `$XDG_RUNTIME_DIR/atb/atb.sock`，否则 `~/.atb/atb.sock` | 控制面 Unix socket。 |
+| `--log-file` / `ATB_LOG` | 与 socket 同目录的 `atb.log` | daemon 日志文件。 |
 | `--log-level` | `info` | daemon 日志级别。 |
 
 ### `start` flags
@@ -175,19 +175,19 @@ HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / 
 
 ## 日志与排障
 
-- daemon 日志写入固定文件（默认与 socket 同目录的 `adbb.log`），由 daemon 进程自身 append，不依赖 CLI 重定向。
+- daemon 日志写入固定文件（默认与 socket 同目录的 `atb.log`），由 daemon 进程自身 append，不依赖 CLI 重定向。
 - 查看日志：
 
   ```bash
-  ./adbb logs -n 50
-  ./adbb logs -f          # follow
+  ./atb logs -n 50
+  ./atb logs -f          # follow
   ```
 
-- `adbb status` 会打印 `log_path\t<path>`。
+- `atb status` 会打印 `log_path\t<path>`。
 - 启动成功：日志包含 `listening`，字段包括 `listen_addr`、`serial`、`backend`。
 - 客户端连接：日志包含 `connect from host`，字段包括 `remote_addr` 和 `remote_host`。
-- `adb connect` 使用的端口应以 `adbb start` 打印的 `listen_addr` 为准；不要假设一定是 `35555`。
+- `adb connect` 使用的端口应以 `atb start` 打印的 `listen_addr` 为准；不要假设一定是 `35555`。
 - ADB 后端连接失败时，先确认 `adb devices` 能看到目标 `<serial>`，并确认 `--server` 指向正确 adb server。
 - HDC 后端连接失败时，先确认 `hdc list targets` 输出包含 `<hdc-target>`，并确认 `--hdc-server` 地址正确。
-- 前台调试 daemon 输出：`./adbb daemon`（同时写 stderr 与日志文件）。
+- 前台调试 daemon 输出：`./atb daemon`（同时写 stderr 与日志文件）。
 - Wireless Debugging TLS transport 不在当前实现范围内；桥接端面向普通明文 ADB transport。

@@ -12,7 +12,7 @@ import (
 
 func TestTailFileLastLines(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "adbb.log")
+	path := filepath.Join(dir, "atb.log")
 	content := "line1\nline2\nline3\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestTailFileMissing(t *testing.T) {
 
 func TestFollowFileReadsAppend(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "adbb.log")
+	path := filepath.Join(dir, "atb.log")
 	if err := os.WriteFile(path, []byte("seed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,7 @@
 
 ```text
 src/
-  cmd/adb-tcp-bridge/   单二进制 CLI：子命令 + 兼容 adbb <serial>
+  cmd/adb-tcp-bridge/   单二进制 CLI：子命令 + 兼容 atb <serial>
   internal/control/     控制协议类型与 socket/log 路径解析
   internal/daemon/      多设备 Manager、UDS 控制面、日志落盘、backend 工厂
   internal/client/      CLI 拨号、auto-start daemon、本地 logs tail/follow
@@ -27,7 +27,7 @@ type DeviceBackend interface {
 ## 启动路径
 
 ```text
-CLI (adbb start/list/status/…)
+CLI (atb start/list/status/…)
   -> client.Call  (UDS NDJSON)
       -> 若 socket 不可达且允许 auto-start：exec 自身 "daemon"
   -> daemon.Server.handleConn
@@ -37,19 +37,19 @@ CLI (adbb start/list/status/…)
 
 1. `main.go` 创建 Cobra root 与子命令（`daemon` / `start` / `stop` / `list` / `status` / `logs` / `kill-server`）。
 2. 控制类命令通过 `client.Client` 连接 Unix socket；`start`/`list`/`status` 在 dial 失败时 auto-start daemon。
-3. `adbb daemon` 打开日志文件、创建 `Manager` 与控制面 `daemon.Server`，在 UDS 上 accept。
+3. `atb daemon` 打开日志文件、创建 `Manager` 与控制面 `daemon.Server`，在 UDS 上 accept。
 4. `OpStart` 时 handler 用 `daemon.NewDeviceBackend` 构造后端，调用 `Manager.Start`：
    - `bridge.NewServer` 校验配置并生成 DeviceID；
    - `Server.Listen` 从 `ListenStartPort` 起绑定 TCP；
    - 后台 goroutine `Server.Serve` 接受外部 adb 连接。
 5. 每个外部 adb client 连接创建一个独立 `session`。
-6. 日志：daemon 进程内 `OpenLogger` 写入与 socket 同目录的 `adbb.log`（可 `ADBB_LOG` / `--log-file` 覆盖）；`adbb logs` 只读本地文件，不经 UDS 流式传输。
+6. 日志：daemon 进程内 `OpenLogger` 写入与 socket 同目录的 `atb.log`（可 `ATB_LOG` / `--log-file` 覆盖）；`atb logs` 只读本地文件，不经 UDS 流式传输。
 
 ## 核心数据流
 
 ```mermaid
 flowchart LR
-    CLI[adbb CLI] -->|UDS NDJSON| DS[daemon.Server]
+    CLI[atb CLI] -->|UDS NDJSON| DS[daemon.Server]
     DS --> M[Manager]
     M -->|Listen+Serve| BS[bridge.Server]
     C[external adb client] -->|ADB wire packets| S[bridge session]

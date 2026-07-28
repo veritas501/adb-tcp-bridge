@@ -69,9 +69,9 @@ func assertRootHelp(t *testing.T, text string) {
 		"kill-server",
 		"daemon",
 		"--socket",
-		"ADBB_SOCKET",
+		"ATB_SOCKET",
 		"Examples:",
-		"adbb start <serial>",
+		"atb start <serial>",
 		"Auto-start daemon",
 	} {
 		if !strings.Contains(text, want) {

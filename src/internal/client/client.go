@@ -14,7 +14,7 @@ import (
 	"adb-tcp-bridge/src/internal/control"
 )
 
-// Client talks to the adbb daemon over a Unix domain socket.
+// Client talks to the atb daemon over a Unix domain socket.
 type Client struct {
 	SocketPath   string
 	LogPath      string

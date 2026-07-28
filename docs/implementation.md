@@ -34,18 +34,18 @@ bridge 的核心实现策略是：保留外部 ADB wire 语义，把每个 ADB `
 
 `client.Call` 在 dial 失败且允许 auto-start 时：
 
-1. `exec` 当前可执行文件：`adbb daemon --socket … --log-file … --log-level …`
+1. `exec` 当前可执行文件：`atb daemon --socket … --log-file … --log-level …`
 2. Unix 上 `Setsid: true` 分离；不 Wait 子进程。
 3. 轮询 dial 直至成功或 `StartTimeout`（默认 5s）。
 
 仅 `start` / `list` / `status` auto-start；`stop` / `kill-server` / `logs` 不拉起。
 
-### 日志落盘与 `adbb logs`
+### 日志落盘与 `atb logs`
 
-- daemon 内 `OpenLogger`：`O_APPEND|O_CREATE|O_WRONLY` 0600；ConsoleWriter 时间格式 `01-02 15:04:05`；`adbb daemon` 同时写 stderr 与文件。
-- 路径：`control.LogPath`（`--log-file` → `ADBB_LOG` → socket 同目录 `adbb.log`）。
+- daemon 内 `OpenLogger`：`O_APPEND|O_CREATE|O_WRONLY` 0600；ConsoleWriter 时间格式 `01-02 15:04:05`；`atb daemon` 同时写 stderr 与文件。
+- 路径：`control.LogPath`（`--log-file` → `ATB_LOG` → socket 同目录 `atb.log`）。
 - v1 不做轮转。
-- `adbb logs`：本地 `TailFile` / `FollowFile`（200ms 轮询），**不经 UDS**；daemon 已退出仍可读历史。
+- `atb logs`：本地 `TailFile` / `FollowFile`（200ms 轮询），**不经 UDS**；daemon 已退出仍可读历史。
 
 ## ADB wire packet
 

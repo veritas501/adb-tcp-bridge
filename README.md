@@ -18,7 +18,7 @@ external adb client
     --adb host protocol--> local adb server --> Android adbd
     --hdc host protocol--> hdc server       --> OpenHarmony hdcd
 
-CLI (adbb start/stop/list/…)
+CLI (atb start/stop/list/…)
   --Unix socket--> daemon control plane --> multi-device Manager
 ```
 
@@ -50,8 +50,8 @@ adb devices   # copy the <serial> of your USB device
 ## Quickstart
 
 ```bash
-make release                      # builds ./adbb (stripped, trimmed)
-./adbb start <serial>             # auto-starts daemon; prints listen_addr
+make release                      # builds ./atb (stripped, trimmed)
+./atb start <serial>              # auto-starts daemon; prints listen_addr
 ```
 
 From another machine (or the same one), connect a regular adb client to the
@@ -62,33 +62,33 @@ adb connect <bridge-host>:35555   # use the port from start output if different
 adb devices
 ```
 
-`adbb start` is short-lived: it prints one `listen_addr` line and exits. The
+`atb start` is short-lived: it prints one `listen_addr` line and exits. The
 daemon keeps the bridge running in the background. Daemon logs go to a fixed
-log file (see below); use `adbb logs` / `adbb logs -f` to inspect them.
+log file (see below); use `atb logs` / `atb logs -f` to inspect them.
 
 > If `35555` is already in use, the bridge automatically tries the next port
-> upward. Always use the address printed by `adbb start`.
+> upward. Always use the address printed by `atb start`.
 
-Legacy form `adbb <serial>` is equivalent to `adbb start <serial>`.
+Legacy form `atb <serial>` is equivalent to `atb start <serial>`.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `adbb start [flags] <serial>` | Start a bridge for one device; prints `listen_addr`. Auto-starts daemon. |
-| `adbb stop <serial>` | Stop one bridge. |
-| `adbb list` | List running bridges (`serial`, `backend`, `listen_addr`, `state`). |
-| `adbb status [serial]` | Daemon/bridge status; includes `log_path`. |
-| `adbb logs [-n N] [-f]` | Read local daemon log file (default last 200 lines; `-f` follow). |
-| `adbb kill-server` | Shut down the daemon. |
-| `adbb daemon` | Run the daemon in the foreground (stderr + log file). |
+| `atb start [flags] <serial>` | Start a bridge for one device; prints `listen_addr`. Auto-starts daemon. |
+| `atb stop <serial>` | Stop one bridge. |
+| `atb list` | List running bridges (`serial`, `backend`, `listen_addr`, `state`). |
+| `atb status [serial]` | Daemon/bridge status; includes `log_path`. |
+| `atb logs [-n N] [-f]` | Read local daemon log file (default last 200 lines; `-f` follow). |
+| `atb kill-server` | Shut down the daemon. |
+| `atb daemon` | Run the daemon in the foreground (stderr + log file). |
 
 ### Shared flags
 
 | Flag / env | Default | Description |
 |------------|---------|-------------|
-| `--socket` / `ADBB_SOCKET` | `$XDG_RUNTIME_DIR/adbb/adbb.sock` or `~/.adbb/adbb.sock` | Daemon control socket. |
-| `--log-file` / `ADBB_LOG` | same directory as socket: `adbb.log` | Daemon log file. |
+| `--socket` / `ATB_SOCKET` | `$XDG_RUNTIME_DIR/atb/atb.sock` or `~/.atb/atb.sock` | Daemon control socket. |
+| `--log-file` / `ATB_LOG` | same directory as socket: `atb.log` | Daemon log file. |
 | `--log-level` | `info` | Log level for daemon: `debug`, `info`, `warn`, `error`. |
 
 ### `start` flags
@@ -105,14 +105,14 @@ Legacy form `adbb <serial>` is equivalent to `adbb start <serial>`.
 Example — fixed port, debug logging via daemon:
 
 ```bash
-./adbb start --port 40000 --log-level debug <serial>
-./adbb logs -n 50
+./atb start --port 40000 --log-level debug <serial>
+./atb logs -n 50
 ```
 
 Expose an OpenHarmony device through an existing HDC server:
 
 ```bash
-./adbb start --backend hdc <hdc-target>
+./atb start --backend hdc <hdc-target>
 adb connect <bridge-host>:35555
 adb -s <bridge-host>:35555 shell
 ```
@@ -132,7 +132,7 @@ If your HDC server only has one target, `any` is usually sufficient.
 Implemented:
 
 - Multi-device daemon + short-lived CLI over Unix domain socket control plane.
-- Auto-start daemon on `start` / `list` / `status`; local log file + `adbb logs`.
+- Auto-start daemon on `start` / `list` / `status`; local log file + `atb logs`.
 - ADB packet codec for `SYNC/CNXN/AUTH/OPEN/OKAY/WRTE/CLSE`.
 - adb server host protocol framing: `4-hex length + command`.
 - hdc server channel framing: `4-byte big-endian length + payload`.
@@ -159,7 +159,7 @@ Not implemented:
 ```bash
 make fmt        # go fmt ./...
 make test       # go test ./...
-make build      # go build -o adbb ./src/cmd/adb-tcp-bridge
+make build      # go build -o atb ./src/cmd/adb-tcp-bridge
 make release    # optimized build: -trimpath -ldflags "-s -w"
 ```
 

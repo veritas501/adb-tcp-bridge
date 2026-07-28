@@ -1,5 +1,5 @@
 # Build outputs (anchored to repo root so they don't shadow src/cmd/adb-tcp-bridge/)
-/adbb
+/atb
 /adb-tcp-bridge
 /bin/
 dist/

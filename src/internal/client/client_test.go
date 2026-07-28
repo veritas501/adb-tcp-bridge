@@ -14,7 +14,7 @@ import (
 
 func TestClientCallRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "adbb.sock")
+	socketPath := filepath.Join(dir, "atb.sock")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestClientCallRoundTrip(t *testing.T) {
 		resp := control.Response{
 			OK:      true,
 			Version: control.ProtocolVersion,
-			LogPath: "/tmp/adbb.log",
+			LogPath: "/tmp/atb.log",
 		}
 		if req.Op == control.OpList {
 			resp.Bridges = []control.BridgeInfo{{
@@ -69,7 +69,7 @@ func TestClientCallRoundTrip(t *testing.T) {
 
 func TestClientCallErrorResponse(t *testing.T) {
 	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "adbb.sock")
+	socketPath := filepath.Join(dir, "atb.sock")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {

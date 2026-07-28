@@ -13,6 +13,7 @@
 ## 快速定位
 
 - 命令入口：`src/cmd/adb-tcp-bridge/main.go`
+- 本地构建产物：`./atb`（`make build` / `make release`）
 - TCP 桥接会话：`src/internal/bridge/`
 - 本机 adb server 后端：`src/internal/adbhost/`
 - HDC server 翻译后端：`src/internal/hdcserver/`

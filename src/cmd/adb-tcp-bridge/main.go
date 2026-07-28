@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// errHelpShown is returned after bare "adbb" prints full help so main exits 2
+// errHelpShown is returned after bare "atb" prints full help so main exits 2
 // without reprinting a short error line.
 var errHelpShown = fmt.Errorf("help shown")
 
@@ -45,7 +45,7 @@ func newRootCommand() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:   "adbb",
+		Use:   "atb",
 		Short: "Expose ADB/HDC-connected devices as ADB-over-TCP via a multi-device daemon",
 		// Long/Example are stable product notes only. Commands and flags are listed
 		// by cobra from AddCommand / flag registration so new subcommands show up
@@ -56,32 +56,32 @@ to it over a Unix domain socket.
 Auto-start daemon: start, list, status.
 Do not auto-start: stop, logs, kill-server.
 
-Control socket (--socket / ADBB_SOCKET):
-  $XDG_RUNTIME_DIR/adbb/adbb.sock  or  ~/.adbb/adbb.sock
+Control socket (--socket / ATB_SOCKET):
+  $XDG_RUNTIME_DIR/atb/atb.sock  or  ~/.atb/atb.sock
 
-Log file (--log-file / ADBB_LOG):
-  <socket-dir>/adbb.log
+Log file (--log-file / ATB_LOG):
+  <socket-dir>/atb.log
 
-Legacy form "adbb <serial>" is equivalent to "adbb start <serial>".
+Legacy form "atb <serial>" is equivalent to "atb start <serial>".
 Use the listen address printed by start (port walks upward from --port on conflict).
 Single-dash long flags are accepted (e.g. -backend hdc).
-See "adbb <command> --help" for per-command flags.`,
-		Example: `  adbb start <serial>
-  adbb start --host 0.0.0.0 --port 35555 <serial>
-  adbb start --backend hdc <hdc-target>
-  adbb <serial>
-  adbb list
-  adbb status
-  adbb logs -n 50
-  adbb logs -f
-  adbb stop <serial>
-  adbb kill-server
-  adbb daemon --log-level debug`,
+See "atb <command> --help" for per-command flags.`,
+		Example: `  atb start <serial>
+  atb start --host 0.0.0.0 --port 35555 <serial>
+  atb start --backend hdc <hdc-target>
+  atb <serial>
+  atb list
+  atb status
+  atb logs -n 50
+  atb logs -f
+  atb stop <serial>
+  atb kill-server
+  atb daemon --log-level debug`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Compatibility: adbb <serial> == adbb start <serial>
+			// Compatibility: atb <serial> == atb start <serial>
 			if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
 				return runStart(cmd.Context(), socketFlag, logFileFlag, logLevel, startFlags{
 					serial:     args[0],
@@ -103,11 +103,11 @@ See "adbb <command> --help" for per-command flags.`,
 	}
 
 	// Keep root help focused on product commands; completion remains available
-	// via "adbb completion" only if explicitly enabled later.
+	// via "atb completion" only if explicitly enabled later.
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	root.PersistentFlags().StringVar(&socketFlag, "socket", "", "daemon control socket path (env ADBB_SOCKET)")
-	root.PersistentFlags().StringVar(&logFileFlag, "log-file", "", "daemon log file path (env ADBB_LOG)")
+	root.PersistentFlags().StringVar(&socketFlag, "socket", "", "daemon control socket path (env ATB_SOCKET)")
+	root.PersistentFlags().StringVar(&logFileFlag, "log-file", "", "daemon log file path (env ATB_LOG)")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", logLevel, "log level: debug, info, warn, error")
 
 	root.AddCommand(
@@ -193,9 +193,9 @@ address for adb connect.
 
 For ADB backend, <serial> is from "adb devices". For HDC backend, use a target
 from "hdc list targets" (or "any" when only one target exists).`,
-		Example: `  adbb start <serial>
-  adbb start --port 40000 <serial>
-  adbb start --backend hdc --hdc-server 127.0.0.1:8710 <hdc-target>
+		Example: `  atb start <serial>
+  atb start --port 40000 <serial>
+  atb start --backend hdc --hdc-server 127.0.0.1:8710 <hdc-target>
   adb connect <printed-listen-addr>`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -417,13 +417,13 @@ func newLogsCommand(socketFlag, logFileFlag *string) *cobra.Command {
 		Short: "Show daemon log file (local; does not auto-start daemon)",
 		Long: `Read the daemon log file from disk (not over the control socket).
 
-Default path is next to the control socket (adbb.log), overridable with
---log-file or ADBB_LOG. Does not start the daemon; if the file is missing,
+Default path is next to the control socket (atb.log), overridable with
+--log-file or ATB_LOG. Does not start the daemon; if the file is missing,
 reports an error. After kill-server the historical log file can still be read.`,
-		Example: `  adbb logs
-  adbb logs -n 50
-  adbb logs -n 0          # entire file
-  adbb logs -f            # follow new lines`,
+		Example: `  atb logs
+  atb logs -n 50
+  atb logs -n 0          # entire file
+  atb logs -f            # follow new lines`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logPath, err := control.LogPath(*logFileFlag, *socketFlag)
