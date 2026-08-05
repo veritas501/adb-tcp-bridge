@@ -79,11 +79,11 @@ Legacy form `atb <serial>` is equivalent to `atb start <serial>`.
 | `atb stop <serial>` | Stop one bridge. |
 | `atb list` | List running bridges (`serial`, `backend`, `listen_addr`, `state`). |
 | `atb status [serial]` | Daemon/bridge status; includes `log_path`. |
+| `atb restart [--binary PATH]` | Restart daemon in place; listen addresses unchanged, bridges restored. |
 | `atb logs [-n N] [-f]` | Read local daemon log file (default last 200 lines; `-f` follow). |
 | `atb version` | Print binary version, commit, and build date. |
 | `atb kill-server` | Shut down the daemon. |
 | `atb daemon` | Run the daemon in the foreground (stderr + log file). |
-
 ### Shared flags
 
 | Flag / env | Default | Description |
@@ -122,7 +122,24 @@ For the HDC backend, `<hdc-target>` is a value from `hdc list targets` and is
 passed to the HDC server as the same connect key used by `hdc -t <hdc-target>`.
 If your HDC server only has one target, `any` is usually sufficient.
 
+### In-place restart / upgrade
+
+`atb restart` replaces the daemon process without changing any listen address:
+the old daemon hands its control socket and every bridge listener to a new
+daemon process, which restores the same bridges on the same ports.
+
+```bash
+./atb restart                 # new daemon runs the current binary
+./atb restart --binary ./atb-new  # run a specific binary instead
+```
+
+To upgrade, replace the binary on disk first (e.g. install a new release over
+the running executable), then `atb restart` — the new daemon runs the replaced
+file. Already-connected adb clients are dropped and must reconnect to the same
+addresses; no configuration changes are needed. Requires a Unix platform.
+
 ## More documentation
+
 
 - [Usage guide](docs/usage.md)
 - [Code architecture](docs/architecture.md)

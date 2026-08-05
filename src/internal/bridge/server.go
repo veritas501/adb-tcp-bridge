@@ -90,6 +90,12 @@ func NewServer(config Config) (*Server, error) {
 	return &Server{config: config}, nil
 }
 
+// DeviceID 返回握手时向外部 adb client 通告的设备标识。
+// daemon 在优雅重启时用它原样恢复 bridge，避免重启后设备标识变化。
+func (s *Server) DeviceID() string {
+	return s.config.DeviceID
+}
+
 func loadDeviceID(ctx context.Context, backend DeviceBackend, serial string) (string, error) {
 	properties, err := backend.ReadProperties(ctx, serial)
 	if err != nil {

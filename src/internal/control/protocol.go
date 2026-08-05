@@ -6,6 +6,7 @@ const (
 	OpList     = "list"
 	OpStatus   = "status"
 	OpShutdown = "shutdown"
+	OpRestart  = "restart"
 	OpVersion  = "version"
 
 	ProtocolVersion = 1
@@ -21,6 +22,9 @@ type Request struct {
 	Server    string `json:"server,omitempty"`  // adb server addr
 	HDCServer string `json:"hdc_server,omitempty"`
 	Auth      string `json:"auth,omitempty"` // "accept-all" | "none"
+	// Binary 是 restart 时新 daemon 使用的可执行文件路径；
+	// 为空时使用旧 daemon 自身的可执行文件（原地替换二进制的 update 场景）。
+	Binary string `json:"binary,omitempty"`
 }
 
 // BridgeInfo describes one managed bridge instance.

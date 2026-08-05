@@ -54,9 +54,17 @@ func (s *Server) dispatch(req control.Request) control.Response {
 		return control.Response{OK: true, Version: control.ProtocolVersion, LogPath: s.logPath}
 
 	case control.OpStart:
+		if s.restarting.Load() {
+			return control.Response{OK: false, Error: "daemon restart in progress, retry shortly"}
+		}
 		return s.handleStart(req)
 
 	case control.OpStop:
+		// restart 移交期间 bridge 列表必须冻结：并发 Stop 会让 handoff 快照
+		// 中的 listener 提前关闭，导致整个 restart 失败。
+		if s.restarting.Load() {
+			return control.Response{OK: false, Error: "daemon restart in progress, retry shortly"}
+		}
 		if req.Serial == "" {
 			return control.Response{OK: false, Error: "serial is required"}
 		}
@@ -64,6 +72,9 @@ func (s *Server) dispatch(req control.Request) control.Response {
 			return control.Response{OK: false, Error: err.Error()}
 		}
 		return control.Response{OK: true, LogPath: s.logPath}
+
+	case control.OpRestart:
+		return s.handleRestart(req)
 
 	case control.OpList:
 		return control.Response{OK: true, Bridges: s.manager.List(), LogPath: s.logPath}
@@ -84,6 +95,22 @@ func (s *Server) dispatch(req control.Request) control.Response {
 	default:
 		return control.Response{OK: false, Error: "unknown op"}
 	}
+}
+
+// handleRestart 触发优雅重启：CAS 置位 restarting 后立即返回 OK，
+// handoff 在后台完成（listener 移交、新 daemon 就绪后本进程退出）。
+func (s *Server) handleRestart(req control.Request) control.Response {
+	if !restartSupported() {
+		return control.Response{OK: false, Error: "graceful restart is not supported on this platform"}
+	}
+	if !s.restarting.CompareAndSwap(false, true) {
+		return control.Response{OK: false, Error: "restart already in progress"}
+	}
+	s.logger.Info().
+		Str("binary", req.Binary).
+		Msg("graceful restart requested")
+	go s.handoff(req)
+	return control.Response{OK: true, LogPath: s.logPath}
 }
 
 func (s *Server) handleStart(req control.Request) control.Response {
@@ -127,6 +154,8 @@ func (s *Server) handleStart(req control.Request) control.Response {
 		ListenStartPort: port,
 		Backend:         deviceBackend,
 		BackendName:     backendName,
+		ADBServer:       adbServer,
+		HDCServer:       hdcAddr,
 		AuthMode:        bridge.AuthMode(auth),
 	})
 	if err != nil {

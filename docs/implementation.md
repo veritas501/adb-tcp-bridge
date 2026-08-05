@@ -25,6 +25,7 @@ bridge 的核心实现策略是：保留外部 ADB wire 语义，把每个 ADB `
 | `stop` | `Manager.Stop` |
 | `list` | `Manager.List` → `bridges` |
 | `status` | 有 serial：单条；无 serial：等价 list；可带 `log_path` |
+| `restart` | 原地替换 daemon（见「优雅重启」）；可带 `binary` 指定新可执行文件 |
 | `shutdown` | 先写成功响应，再 cancel daemon root ctx |
 | `version` | `{ok:true, version:1}` |
 
@@ -39,6 +40,44 @@ bridge 的核心实现策略是：保留外部 ADB wire 语义，把每个 ADB `
 3. 轮询 dial 直至成功或 `StartTimeout`（默认 5s）。
 
 仅 `start` / `list` / `status` auto-start；`stop` / `kill-server` / `logs` 不拉起。
+
+### 优雅重启（restart）
+
+实现位置：`src/internal/daemon/upgrade_unix.go`（handoff / restore）、
+`restore.go`（恢复状态序列化）、`daemon/server.go`（accept 暂停与退出分支）、
+`client/client.go`（`WaitReady`）。
+
+旧 daemon 收到 `op=restart` 后：
+
+1. `restarting` 置位：控制面 accept 循环暂停（新连接排队等待新 daemon）。
+2. `Manager.Snapshot()` 快照每台 bridge 的恢复配置（serial、backend 名与地址、
+   auth、ListenHost、DeviceID）与其 TCP listener。
+3. 用 `(*net.TCPListener).File()` / `(*net.UnixListener).File()` 提取 dup fd：
+   UDS 首位，其后按快照顺序为各 TCP listener，末位为 ready pipe 写端。
+4. `exec` 新二进制（`req.Binary` 或自身可执行文件），`ExtraFiles` 传 fd
+   （子进程 fd 3..n），`--inherit "3,4,…"` 标注 fd 布局，恢复配置经环境变量
+   `ATB_RESTORE`（base64 JSON）传递。
+5. 等待 ready pipe：新进程全部恢复成功写一个字节，旧进程读到后置
+   `handedOff`、取消 root ctx 退出。
+
+新 daemon（`--inherit` 模式）：
+
+1. `net.FileListener` 恢复各 TCP listener，`Manager.Adopt` 按恢复配置直接
+   Serve（不重新绑定端口、不重新查询设备属性）。
+2. 恢复 UDS listener 并接管控制面；任一 bridge 恢复失败则整体失败，新进程
+   退出、旧 daemon 恢复 accept。
+3. 写 ready pipe 通知旧进程后进入正常 accept 循环。
+
+关键约束：
+
+- 旧 daemon 退出前必须 `SetUnlinkOnClose(false)`：`net.Listen("unix")` 创建的
+  listener 关闭时会删除 socket 文件，不移交场景下这是清理行为，但移交后
+  文件归新 daemon 使用，删除会让新 daemon 的 socket 路径失效。
+- 恢复的 UDS listener 由 `net.FileListener` 创建（默认不 unlink），新 daemon
+  退出时由 `Server.Run` 的 defer `os.Remove` 删除。
+- fd 传递只迁移 listener，不迁移已建立的 session 连接：客户端需重连，但
+  监听地址不变。
+- Windows 无 fd 继承机制：`restartSupported()` 返回 false，restart 报错。
 
 ### 日志落盘与 `atb logs`
 

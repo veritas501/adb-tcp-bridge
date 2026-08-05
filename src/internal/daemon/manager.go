@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -32,9 +33,11 @@ type Manager struct {
 }
 
 type managedBridge struct {
-	cancel context.CancelFunc
-	info   control.BridgeInfo
-	done   <-chan error
+	cancel   context.CancelFunc
+	info     control.BridgeInfo
+	done     <-chan error
+	listener net.Listener
+	restore  BridgeRestore
 
 	// lastFailedAt 是最近一次设备连接失败的起点；零值表示设备当前健康。
 	// 失败只在从健康变为失败时记录一次，后续连续失败不刷新起点，保证
@@ -50,7 +53,10 @@ type StartConfig struct {
 	ListenStartPort int
 	Backend         bridge.DeviceBackend
 	BackendName     string // "adb" | "hdc"
-	AuthMode        bridge.AuthMode
+	// ADBServer / HDCServer 记录后端地址，供优雅重启时原样重建 Backend。
+	ADBServer string
+	HDCServer string
+	AuthMode  bridge.AuthMode
 }
 
 // NewManager creates an empty multi-device bridge manager.
@@ -103,7 +109,25 @@ func (m *Manager) Start(parent context.Context, cfg StartConfig) (control.Bridge
 		cancel()
 		return control.BridgeInfo{}, err
 	}
+	// listener 已绑定，Listen 不再依赖 ctx；Serve 的生命周期由 startItem 管理。
+	cancel()
 
+	restore := BridgeRestore{
+		Serial:      cfg.Serial,
+		ListenHost:  cfg.ListenHost,
+		BackendName: cfg.BackendName,
+		ADBServer:   cfg.ADBServer,
+		HDCServer:   cfg.HDCServer,
+		AuthMode:    string(cfg.AuthMode),
+		DeviceID:    server.DeviceID(),
+	}
+	return m.startItem(parent, cfg, server, listener, restore)
+}
+
+// startItem 登记一台 bridge 并启动 Serve goroutine，Start 与 Adopt 共用。
+// listener 已绑定：Start 来自 Listen，Adopt 来自旧 daemon 移交。
+func (m *Manager) startItem(parent context.Context, cfg StartConfig, server *bridge.Server, listener net.Listener, restore BridgeRestore) (control.BridgeInfo, error) {
+	ctx, cancel := context.WithCancel(parent)
 	info := control.BridgeInfo{
 		Serial:     cfg.Serial,
 		Backend:    cfg.BackendName,
@@ -114,9 +138,11 @@ func (m *Manager) Start(parent context.Context, cfg StartConfig) (control.Bridge
 
 	done := make(chan error, 1)
 	item := &managedBridge{
-		cancel: cancel,
-		info:   info,
-		done:   done,
+		cancel:   cancel,
+		info:     info,
+		done:     done,
+		listener: listener,
+		restore:  restore,
 	}
 
 	m.mu.Lock()
@@ -151,6 +177,72 @@ func (m *Manager) Start(parent context.Context, cfg StartConfig) (control.Bridge
 	}()
 
 	return info, nil
+}
+
+// Adopt 恢复一台由旧 daemon 移交的 bridge：listener 已绑定且状态完整，
+// 直接开始服务，不重新绑定端口、不重新查询设备属性。
+func (m *Manager) Adopt(parent context.Context, r BridgeRestore, listener net.Listener) (control.BridgeInfo, error) {
+	if r.Serial == "" {
+		return control.BridgeInfo{}, fmt.Errorf("serial is required")
+	}
+
+	m.mu.Lock()
+	if existing, ok := m.items[r.Serial]; ok && existing.info.State == "running" {
+		m.mu.Unlock()
+		return control.BridgeInfo{}, fmt.Errorf("bridge already running for serial %q", r.Serial)
+	}
+	m.mu.Unlock()
+
+	// reaper 随首个 bridge 启动，生命周期绑定 daemon 的 parent ctx。
+	m.reapOnce.Do(func() { go m.runReaper(parent) })
+
+	backend, err := NewDeviceBackend(r.BackendName, r.ADBServer, r.HDCServer)
+	if err != nil {
+		return control.BridgeInfo{}, err
+	}
+	server, err := bridge.NewServer(bridge.Config{
+		ListenHost: r.ListenHost,
+		Serial:     r.Serial,
+		Backend:    backend,
+		AuthMode:   bridge.AuthMode(r.AuthMode),
+		DeviceID:   r.DeviceID,
+		Logger:     m.logger,
+		// 转发层每次尝试连接设备后回调：成功=设备可达，失败=设备失联。
+		OnBackendResult: func(ok bool) { m.onBackendResult(r.Serial, ok) },
+	})
+	if err != nil {
+		return control.BridgeInfo{}, err
+	}
+
+	return m.startItem(parent, StartConfig{
+		Serial:      r.Serial,
+		ListenHost:  r.ListenHost,
+		Backend:     backend,
+		BackendName: r.BackendName,
+		ADBServer:   r.ADBServer,
+		HDCServer:   r.HDCServer,
+		AuthMode:    bridge.AuthMode(r.AuthMode),
+	}, server, listener, r)
+}
+
+// SnapshotItem 是 Snapshot 的一项：恢复配置与对应 TCP listener 配对。
+type SnapshotItem struct {
+	Restore  BridgeRestore
+	Listener net.Listener
+}
+
+// Snapshot 返回所有运行中 bridge 的恢复状态与其 TCP listener，供优雅重启
+// 时把监听 fd 移交给新 daemon。同一调用内 slice 顺序自洽（Restore 与
+// Listener 一一对应）；调用方不得关闭 listener。
+func (m *Manager) Snapshot() []SnapshotItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]SnapshotItem, 0, len(m.items))
+	for _, item := range m.items {
+		out = append(out, SnapshotItem{Restore: item.restore, Listener: item.listener})
+	}
+	return out
 }
 
 // Stop cancels one bridge and waits for Serve to exit.

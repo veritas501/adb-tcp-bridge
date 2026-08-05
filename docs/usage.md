@@ -133,6 +133,7 @@ HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / 
 | `atb stop <serial>` | 停止一台 | 否（daemon 未运行时报错） |
 | `atb list` | 列出 running bridges | 是 |
 | `atb status [serial]` | 状态摘要；含 `log_path` | 是 |
+| `atb restart [--binary PATH]` | 原地重启 daemon，监听地址不变、bridges 自动恢复 | 否（需 daemon 运行中） |
 | `atb logs [-n N] [-f]` | 读本地 daemon 日志文件 | 否（只读文件） |
 | `atb kill-server` | 关闭 daemon | 否（未运行时提示并 exit 0） |
 | `atb daemon` | 前台运行 daemon（stderr + 日志文件） | — |
@@ -194,3 +195,30 @@ HDC 后端当前翻译 `shell:`、`exec:`、`sync:`，以及 `localabstract:` / 
 - HDC 后端连接失败时，先确认 `hdc list targets` 输出包含 `<hdc-target>`，并确认 `--hdc-server` 地址正确。
 - 前台调试 daemon 输出：`./atb daemon`（同时写 stderr 与日志文件）。
 - Wireless Debugging TLS transport 不在当前实现范围内；桥接端面向普通明文 ADB transport。
+
+## 原地重启与升级
+
+`atb restart` 在不改变任何监听地址的前提下替换 daemon 进程：旧 daemon 把
+控制面 socket 与每台 bridge 的 TCP listener 移交给新 daemon 进程，新进程
+按原配置恢复全部 bridge（serial、backend、端口、auth、设备 ID），就绪后
+旧进程退出。
+
+```bash
+./atb restart                   # 新 daemon 运行当前二进制
+./atb restart --binary ./atb-new  # 指定二进制
+```
+
+升级流程：先用新版本覆盖磁盘上的二进制（运行中的进程不受影响），再执行
+`atb restart`，新 daemon 即运行替换后的文件。
+
+行为边界：
+
+- 监听端口与设备列表不变；已建立的客户端连接会断开，需用相同地址重新
+  `adb connect`，无需修改任何配置。
+- 仅在 daemon 运行中可用（不会自动拉起）；Windows 平台不支持，返回明确错误。
+- 移交过程整体原子：任一 bridge 恢复失败则新进程退出、旧 daemon 继续服务，
+  不会出现半接管状态。
+- 前台模式 `atb daemon` 执行 restart 后，新 daemon 转为后台（setsid）运行，
+  日志仍写同一文件。
+- restart 期间（毫秒级）到达的 `atb start` / `atb stop` 变更请求会被拒绝并提示重试。
+

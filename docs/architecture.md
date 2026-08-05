@@ -35,7 +35,7 @@ CLI (atb start/list/status/…)
           -> bridge.NewServer + Listen + Serve (per serial)
 ```
 
-1. `main.go` 创建 Cobra root 与子命令（`daemon` / `start` / `stop` / `list` / `status` / `logs` / `kill-server`）。
+1. `main.go` 创建 Cobra root 与子命令（`daemon` / `start` / `stop` / `list` / `status` / `restart` / `logs` / `kill-server`）。
 2. 控制类命令通过 `client.Client` 连接 Unix socket；`start`/`list`/`status` 在 dial 失败时 auto-start daemon。
 3. `atb daemon` 打开日志文件、创建 `Manager` 与控制面 `daemon.Server`，在 UDS 上 accept。
 4. `OpStart` 时 handler 用 `daemon.NewDeviceBackend` 构造后端，调用 `Manager.Start`：
@@ -44,6 +44,13 @@ CLI (atb start/list/status/…)
    - 后台 goroutine `Server.Serve` 接受外部 adb 连接。
 5. 每个外部 adb client 连接创建一个独立 `session`。
 6. 日志：daemon 进程内 `OpenLogger` 写入与 socket 同目录的 `atb.log`（可 `ATB_LOG` / `--log-file` 覆盖）；`atb logs` 只读本地文件，不经 UDS 流式传输。
+7. `OpRestart`（`atb restart`）：原地替换 daemon 进程。旧 daemon 停止 accept，
+   快照全部 bridge 的恢复配置（serial/backend/地址/auth/DeviceID），把 UDS 与
+   各 TCP listener 的 fd 经 exec（`ExtraFiles` + `--inherit` + 环境变量
+   `ATB_RESTORE`）移交给新二进制进程；新进程用 `net.FileListener` 恢复 listener、
+   `Manager.Adopt` 恢复 bridge，就绪后经 ready pipe 通知旧进程退出。监听端口
+   全程不释放；已建立的客户端连接会断开（listener 迁移不迁移 session）。
+   详见 `internal/daemon/upgrade_unix.go`。
 
 ## 核心数据流
 

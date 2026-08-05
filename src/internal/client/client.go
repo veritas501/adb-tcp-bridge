@@ -96,6 +96,42 @@ func (c *Client) call(ctx context.Context, req control.Request, autoStart bool) 
 	return resp, nil
 }
 
+// WaitReady 轮询控制面直到 daemon 响应一次版本探测，用于 restart 后确认
+// 新 daemon 已接管。旧 daemon 收到 restart 请求后立即停止 accept，因此
+// 任何成功响应都来自新 daemon；dial 失败或读超时则重试直到 deadline。
+func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	req := control.Request{Op: control.OpVersion}
+	for {
+		conn, err := c.dial(ctx)
+		if err == nil {
+			// 探测可能排队等待新 daemon accept，限制单次等待避免无限 hang。
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			data, _ := json.Marshal(req)
+			if _, err := conn.Write(append(data, '\n')); err == nil {
+				scanner := bufio.NewScanner(conn)
+				scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+				if scanner.Scan() {
+					var resp control.Response
+					if err := json.Unmarshal(scanner.Bytes(), &resp); err == nil && resp.OK && resp.Version > 0 {
+						_ = conn.Close()
+						return nil
+					}
+				}
+			}
+			_ = conn.Close()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for daemon at %s", c.SocketPath)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	if c.SocketPath == "" {
 		return nil, errors.New("socket path is required")

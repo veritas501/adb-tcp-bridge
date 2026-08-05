@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"adb-tcp-bridge/src/internal/bridge"
 	"adb-tcp-bridge/src/internal/client"
@@ -99,6 +100,7 @@ func newRootCommand() *cobra.Command {
 		newStopCommand(&socketFlag, &logFileFlag, &logLevel),
 		newListCommand(&socketFlag, &logFileFlag, &logLevel),
 		newStatusCommand(&socketFlag, &logFileFlag, &logLevel),
+		newRestartCommand(&socketFlag, &logFileFlag, &logLevel),
 		newLogsCommand(&socketFlag, &logFileFlag),
 		newKillServerCommand(&socketFlag, &logFileFlag, &logLevel),
 	)
@@ -118,7 +120,8 @@ func newVersionCommand() *cobra.Command {
 }
 
 func newDaemonCommand(socketFlag, logFileFlag, logLevel *string) *cobra.Command {
-	return &cobra.Command{
+	var inherit string
+	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the multi-device bridge daemon in the foreground",
 		Args:  cobra.NoArgs,
@@ -147,9 +150,30 @@ func newDaemonCommand(socketFlag, logFileFlag, logLevel *string) *cobra.Command 
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+
+			// 优雅重启接管路径：--inherit 由旧 daemon exec 时传入，恢复其
+			// 移交的 listener 与 bridges，就绪后正常进入 Run 的 accept 循环。
+			if inherit != "" {
+				fds, err := daemon.ParseInheritFds(inherit)
+				if err != nil {
+					return err
+				}
+				state, err := daemon.DecodeRestoreState(os.Getenv(daemon.RestoreStateEnv))
+				if err != nil {
+					return err
+				}
+				uds, err := daemon.RestoreInherited(ctx, manager, fds, state, &logger)
+				if err != nil {
+					return err
+				}
+				server.SetInheritedListener(uds)
+			}
 			return server.Run(ctx)
 		},
 	}
+	// 仅供优雅重启内部使用，由旧 daemon 在 exec 新进程时构造。
+	cmd.Flags().StringVar(&inherit, "inherit", "", "inherited listener fds: control,tcp...,ready (internal)")
+	return cmd
 }
 
 type startFlags struct {
@@ -437,6 +461,56 @@ reports an error. After kill-server the historical log file can still be read.`,
 	}
 	cmd.Flags().IntVarP(&tail, "tail", "n", tail, "number of lines from the end of the log (0 = entire file)")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow log file for new content")
+	return cmd
+}
+
+func newRestartCommand(socketFlag, logFileFlag, logLevel *string) *cobra.Command {
+	var binary string
+	cmd := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the daemon without changing listen addresses",
+		Long: `Restart the daemon in place: every bridge listen address stays the same
+and running bridges are restored automatically by the new daemon process.
+
+The old daemon hands its listeners to a new daemon process and exits once the
+new daemon is ready; the control socket and all bridge ports keep their
+addresses. Already-connected clients are dropped and must reconnect to the
+same addresses.
+
+To update the binary, replace it on disk first and run "atb restart": the new
+daemon runs the replaced executable. Alternatively pass --binary to point at
+a specific path (it does not replace the installed binary).`,
+		Example: `  atb restart
+  atb restart --binary /opt/atb/atb-new`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if binary != "" {
+				if _, err := os.Stat(binary); err != nil {
+					return fmt.Errorf("restart binary %q: %w", binary, err)
+				}
+			}
+			c, err := newClient(*socketFlag, *logFileFlag, *logLevel)
+			if err != nil {
+				return err
+			}
+			c.AutoStart = false
+			req := control.Request{Op: control.OpRestart, Binary: binary}
+			if _, err := c.CallNoStart(cmd.Context(), req); err != nil {
+				if client.IsNotRunning(err) {
+					return fmt.Errorf("daemon is not running")
+				}
+				return err
+			}
+			// 旧 daemon 收到请求后立即停止 accept，因此下一次成功响应必然
+			// 来自接管后的新 daemon。
+			if err := c.WaitReady(cmd.Context(), 15*time.Second); err != nil {
+				return fmt.Errorf("restart requested but new daemon did not come up: %w", err)
+			}
+			fmt.Println("Daemon restarted")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&binary, "binary", "", "executable for the new daemon (default: current daemon binary)")
 	return cmd
 }
 
