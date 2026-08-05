@@ -80,6 +80,9 @@ make release-cross
    ./atb kill-server            # 关闭整个 daemon
    ```
 
+   设备失联后 bridge 不会立刻退出：转发失败开始计时，10 分钟内没有成功转发
+   （设备恢复并再次被访问）会自动清理该 bridge；期间设备恢复则计时清零。
+
 ## HDC 后端：暴露 OpenHarmony 设备
 
 1. 在桥接主机查询 HDC target：

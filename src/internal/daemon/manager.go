@@ -11,19 +11,36 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const stopWaitTimeout = 5 * time.Second
+const (
+	stopWaitTimeout          = 5 * time.Second
+	defaultCleanAfterFailure = 10 * time.Minute
+	defaultReapInterval      = 30 * time.Second
+)
 
 // Manager tracks running bridge instances keyed by serial.
 type Manager struct {
 	logger *zerolog.Logger
 	mu     sync.Mutex
 	items  map[string]*managedBridge
+
+	// cleanAfterFailure 是设备失联后的清理阈值：从最近一次失败的
+	// lastFailedAt 起，cleanAfterFailure 内没有任何成功连接就摘除 bridge。
+	// reapInterval 是后台检查周期。两者默认 10 分钟 / 30 秒，测试可调小。
+	cleanAfterFailure time.Duration
+	reapInterval      time.Duration
+	reapOnce          sync.Once
 }
 
 type managedBridge struct {
 	cancel context.CancelFunc
 	info   control.BridgeInfo
 	done   <-chan error
+
+	// lastFailedAt 是最近一次设备连接失败的起点；零值表示设备当前健康。
+	// 失败只在从健康变为失败时记录一次，后续连续失败不刷新起点，保证
+	// "失败后 cleanAfterFailure 内没有重新起来过"的窗口始终从首次失败算起；
+	// 任何一次成功连接将其清零。
+	lastFailedAt time.Time
 }
 
 // StartConfig is the daemon-side start request after flags/defaults are applied.
@@ -43,8 +60,10 @@ func NewManager(logger *zerolog.Logger) *Manager {
 		logger = &nop
 	}
 	return &Manager{
-		logger: logger,
-		items:  make(map[string]*managedBridge),
+		logger:            logger,
+		items:             make(map[string]*managedBridge),
+		cleanAfterFailure: defaultCleanAfterFailure,
+		reapInterval:      defaultReapInterval,
 	}
 }
 
@@ -61,6 +80,9 @@ func (m *Manager) Start(parent context.Context, cfg StartConfig) (control.Bridge
 	}
 	m.mu.Unlock()
 
+	// reaper 随首个 bridge 启动，生命周期绑定 daemon 的 parent ctx。
+	m.reapOnce.Do(func() { go m.runReaper(parent) })
+
 	server, err := bridge.NewServer(bridge.Config{
 		ListenHost:      cfg.ListenHost,
 		ListenStartPort: cfg.ListenStartPort,
@@ -68,6 +90,8 @@ func (m *Manager) Start(parent context.Context, cfg StartConfig) (control.Bridge
 		Backend:         cfg.Backend,
 		AuthMode:        cfg.AuthMode,
 		Logger:          m.logger,
+		// 转发层每次尝试连接设备后回调：成功=设备可达，失败=设备失联。
+		OnBackendResult: func(ok bool) { m.onBackendResult(cfg.Serial, ok) },
 	})
 	if err != nil {
 		return control.BridgeInfo{}, err
@@ -195,5 +219,70 @@ func (m *Manager) StopAll() {
 				Str("serial", item.info.Serial).
 				Msg("timed out waiting for bridge stop during StopAll")
 		}
+	}
+}
+
+// onBackendResult 记录一次后端连接结果：成功清除失联计时（设备重新可达），
+// 失败仅在设备从健康变为失联时开始计时。由转发层 goroutine 调用，频率低。
+func (m *Manager) onBackendResult(serial string, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	item, found := m.items[serial]
+	if !found {
+		return
+	}
+	if ok {
+		item.lastFailedAt = time.Time{}
+		return
+	}
+	if item.lastFailedAt.IsZero() {
+		item.lastFailedAt = time.Now()
+	}
+}
+
+// runReaper 周期检查失联超时的 bridge，直到 ctx 取消。
+func (m *Manager) runReaper(ctx context.Context) {
+	ticker := time.NewTicker(m.reapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reapExpired()
+		}
+	}
+}
+
+// reapExpired 摘除失联超时的 bridge：从 lastFailedAt 起 cleanAfterFailure 内
+// 没有任何成功连接即视为失联。与 Stop 相同，先移除 map 条目再 cancel，
+// 避免与并发 Stop/Serve 退出竞态。
+func (m *Manager) reapExpired() {
+	now := time.Now()
+	m.mu.Lock()
+	var expired []*managedBridge
+	for serial, item := range m.items {
+		if !item.lastFailedAt.IsZero() && now.Sub(item.lastFailedAt) >= m.cleanAfterFailure {
+			delete(m.items, serial)
+			expired = append(expired, item)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, item := range expired {
+		item.cancel()
+		select {
+		case <-item.done:
+		case <-time.After(stopWaitTimeout):
+			m.logger.Warn().
+				Str("serial", item.info.Serial).
+				Msg("timed out waiting for bridge cleanup")
+		}
+		m.logger.Info().
+			Str("serial", item.info.Serial).
+			Str("listen_addr", item.info.ListenAddr).
+			Dur("unhealthy_for", time.Since(item.lastFailedAt)).
+			Msg("bridge cleaned up: no successful device connection since failure")
 	}
 }

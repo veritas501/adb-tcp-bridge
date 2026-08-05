@@ -52,6 +52,14 @@ func newSession(config Config, conn net.Conn) *session {
 	return s
 }
 
+// reportBackendResult 向配置的 OnBackendResult 回调报告一次后端连接结果。
+// 成功表示设备可达并应重置失联计时；失败表示设备可能失联并应开始计时。
+func (s *session) reportBackendResult(ok bool) {
+	if s.config.OnBackendResult != nil {
+		s.config.OnBackendResult(ok)
+	}
+}
+
 func (s *session) run(ctx context.Context) {
 	done := make(chan struct{})
 	defer close(done)

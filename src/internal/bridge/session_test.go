@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -132,4 +133,149 @@ func TestLocalHandlerRoutesReverseOnly(t *testing.T) {
 	if h := session.localHandler("reverse:list-forward"); h == nil {
 		t.Fatal("localHandler(reverse:) = nil, want a local responder")
 	}
+}
+
+// resultBackend 返回固定结果的后端：err 非空时 OpenService 失败，
+// 否则返回一个已关闭对端的管道连接，让转发尽快读到 EOF 结束。
+type resultBackend struct {
+	err error
+}
+
+func (b resultBackend) OpenService(context.Context, string, string) (net.Conn, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, nil
+}
+
+func (b resultBackend) ReadProperties(context.Context, string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (b resultBackend) Description() string { return "resultBackend" }
+
+// service 转发路径按后端连接结果上报 OnBackendResult：连接成功报 true，
+// 打开设备服务失败报 false。
+func TestServiceReportsBackendResult(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		client, server := newMemoryConn()
+		defer client.Close()
+		defer server.Close()
+
+		results := make(chan bool, 2)
+		session := newSession(Config{
+			Backend:         resultBackend{},
+			OnBackendResult: func(ok bool) { results <- ok },
+		}, server)
+
+		svc := newService(session, 1, 2, "shell:v1")
+		done := make(chan struct{})
+		go func() {
+			svc.run(context.Background())
+			close(done)
+		}()
+
+		// 读取 OKAY 与随后的 CLSE，避免 session 写阻塞；随后 pump 读到
+		// EOF 自行退出。
+		for range 2 {
+			if _, err := adbwire.ReadPacket(client); err != nil {
+				t.Fatalf("ReadPacket(okay/clse) error = %v", err)
+			}
+		}
+		select {
+		case ok := <-results:
+			if !ok {
+				t.Fatal("backend result = false, want true")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no backend result reported on success")
+		}
+		<-done
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		client, server := newMemoryConn()
+		defer client.Close()
+		defer server.Close()
+
+		results := make(chan bool, 2)
+		session := newSession(Config{
+			Backend:         resultBackend{err: errors.New("device offline")},
+			OnBackendResult: func(ok bool) { results <- ok },
+		}, server)
+
+		svc := newService(session, 1, 2, "shell:v1")
+		done := make(chan struct{})
+		go func() {
+			svc.run(context.Background())
+			close(done)
+		}()
+
+		select {
+		case ok := <-results:
+			if ok {
+				t.Fatal("backend result = true, want false")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no backend result reported on failure")
+		}
+		// OpenService 失败后 finish 仍会写 CLSE（remoteID 非零），读掉避免阻塞。
+		if _, err := adbwire.ReadPacket(client); err != nil {
+			t.Fatalf("ReadPacket(clse) error = %v", err)
+		}
+		<-done
+	})
+}
+
+// reverse 控制通道直连设备：打开失败报 false，完整读到响应报 true。
+func TestReverseReportsBackendResult(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		_, server := newMemoryConn()
+		defer server.Close()
+
+		results := make(chan bool, 2)
+		session := newSession(Config{
+			Backend:         resultBackend{err: errors.New("device offline")},
+			OnBackendResult: func(ok bool) { results <- ok },
+		}, server)
+
+		m := newReverseManager(session)
+		if _, err := m.runDeviceReverse(context.Background(), "list-forward"); err == nil {
+			t.Fatal("runDeviceReverse() error = nil, want error")
+		}
+		select {
+		case ok := <-results:
+			if ok {
+				t.Fatal("backend result = true, want false")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no backend result reported on reverse failure")
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		_, server := newMemoryConn()
+		defer server.Close()
+
+		results := make(chan bool, 2)
+		session := newSession(Config{
+			Backend:         resultBackend{},
+			OnBackendResult: func(ok bool) { results <- ok },
+		}, server)
+
+		m := newReverseManager(session)
+		if _, err := m.runDeviceReverse(context.Background(), "list-forward"); err != nil {
+			t.Fatalf("runDeviceReverse() error = %v", err)
+		}
+		select {
+		case ok := <-results:
+			if !ok {
+				t.Fatal("backend result = false, want true")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("no backend result reported on reverse success")
+		}
+	})
 }

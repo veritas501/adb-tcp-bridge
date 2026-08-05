@@ -87,6 +87,11 @@ flowchart LR
 - `Start`：Listen 成功后登记 running，Serve 在 goroutine 中运行；Serve 退出后从 map 删除。
 - `Stop` / `StopAll`：cancel + 等待 done。
 - 同 serial 重复 Start 失败。
+- 失联自动清理：转发层每次尝试连接设备后通过 `Config.OnBackendResult` 回报结果
+  （成功=设备可达，失败=失联）。Manager 从首次失败起计时，`cleanAfterFailure`
+  （默认 10 分钟）内没有任何成功连接时，reaper（默认 30 秒周期）摘除该 bridge。
+  任何一次成功连接清零计时；连续失败不刷新起点，避免重试流量无限推迟清理。
+  bridge 不主动探测设备，清理只发生在设备曾失联且未恢复的场景。
 
 ## `bridge.session`
 

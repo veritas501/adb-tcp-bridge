@@ -219,10 +219,17 @@ func (m *reverseManager) runDeviceReverse(ctx context.Context, command string) (
 	}
 	conn, err := m.session.config.Backend.OpenService(ctx, m.session.config.Serial, "reverse:"+command)
 	if err != nil {
+		m.session.reportBackendResult(false)
 		return nil, err
 	}
 	defer conn.Close()
-	return io.ReadAll(conn)
+	data, err := io.ReadAll(conn)
+	if err == nil {
+		// 控制通道完整读到响应，说明设备当时可达；读取中断（如设备断开
+		// 控制流）不算失联信号，不报告。
+		m.session.reportBackendResult(true)
+	}
+	return data, err
 }
 
 func reverseResponseOK(response []byte) bool {

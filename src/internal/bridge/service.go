@@ -51,10 +51,12 @@ func (s *service) run(ctx context.Context) {
 			Uint32("local_id", s.localID).
 			Uint32("remote_id", s.remoteID.Load()).
 			Msg("open adb service failed")
+		s.session.reportBackendResult(false)
 		return
 	}
 	s.setConn(conn)
 	s.opened = true
+	s.session.reportBackendResult(true)
 
 	if err := s.session.writePacket(adbwire.Packet{
 		Command: adbwire.CmdOkay,

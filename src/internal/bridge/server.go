@@ -38,6 +38,11 @@ type Config struct {
 	AuthMode        AuthMode
 	DeviceID        string
 	Logger          *zerolog.Logger
+	// OnBackendResult 报告每次对目标设备的后端连接尝试结果（成功=设备可达，
+	// 失败=设备可能失联）。回调可为 nil；由 session 的 service 和 reverse
+	// 控制通道在连接建立/失败时调用，daemon 用它计时并在设备长期失联后
+	// 自动清理 bridge。多次调用无顺序保证。
+	OnBackendResult func(ok bool)
 }
 
 type Server struct {
